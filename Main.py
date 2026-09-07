@@ -20,7 +20,7 @@ Estilo: directo, sin sermones. Usa emojis ok/atencion/critico.
 Despues de cada tarea agrega mini ciclo evolutivo: que hiciste, que salio mal, que aprendiste.
 
 TENES UN OBRERO EXTERNO (herramienta delegar_a_obrero):
-- 'gemini': Gemini Flash (auto-descubierto en vivo). Uso: documentos largos, resumenes masivos, velocidad.
+- 'gemini': Gemini Flash. Uso: documentos largos, resumenes masivos, velocidad.
 Delegá cuando: la tarea sea pesada o larga, o necesites procesamiento masivo de texto.
 Vos sos el JEFE: integra lo que devuelve el obrero con tu criterio, no lo copies a ciegas.
 
@@ -155,7 +155,6 @@ def llamar_obrero(tarea):
             if r.status_code == 200:
                 data = r.json()
                 if "candidates" in data and len(data["candidates"]) > 0:
-                    MODELOS_CACHE["gemini"] = modelo
                     return data["candidates"][0]["content"]["parts"][0]["text"][:4000]
             if r.status_code in [404, 503, 429]:
                 continue
@@ -165,15 +164,54 @@ def llamar_obrero(tarea):
     return "obrero gemini fallo: todos los modelos agotados"
 
 
-def pensar(msgs):
+def gemini_tools():
+    decls = []
+    for t in TOOLS:
+        f = t["function"]
+        decls.append({
+            "name": f["name"],
+            "description": f["description"],
+            "parameters": f["parameters"]
+        })
+    return {"function_declarations": decls}
+
+
+def convertir_a_gemini(msgs):
+    contents = []
+    for m in msgs:
+        r = m["role"]
+        if r == "user":
+            contents.append({"role": "user", "parts": [{"text": m["content"]}]})
+        elif r == "assistant":
+            parts = []
+            if m.get("content"):
+                parts.append({"text": m["content"]})
+            for tc in m.get("tool_calls", []):
+                try:
+                    args = json.loads(tc["function"]["arguments"])
+                except Exception:
+                    args = {}
+                parts.append({"function_call": {"name": tc["function"]["name"], "args": args}})
+            if parts:
+                contents.append({"role": "model", "parts": parts})
+        elif r == "tool":
+            contents.append({"role": "user", "parts": [{
+                "function_response": {
+                    "name": m.get("name", "ejecutar_python"),
+                    "response": {"result": m["content"]}
+                }}]})
+    return contents
+
+
+def pensar_groq(msgs):
     import requests
     ultimo = ""
     for modelo in candidatos_groq()[:4]:
-        for mx in [None, 1000]:
+        for intento in range(2):
             payload = {"model": modelo, "messages": msgs,
                        "tools": TOOLS, "temperature": 0.4}
-            if mx:
-                payload["max_tokens"] = mx
+            if intento > 0:
+                payload["max_tokens"] = 1000
             r = requests.post("https://api.groq.com/openai/v1/chat/completions",
                               headers={"Authorization": f"Bearer {GROQ_KEY}"},
                               json=payload, timeout=120)
@@ -181,20 +219,62 @@ def pensar(msgs):
             if "choices" in data:
                 return data["choices"][0]["message"]
             ultimo = f"{modelo}: {r.status_code} {r.text[:150]}"
-            if r.status_code != 429:
-                break
+            if r.status_code == 429:
+                time.sleep(20)
+                continue
+            break
     raise Exception(f"Groq fallo -> {ultimo}")
+
+
+def pensar_gemini(msgs):
+    import requests
+    modelo = candidato_gemini()
+    system = ""
+    cuerpo = msgs
+    if msgs and msgs[0]["role"] == "system":
+        system = msgs[0]["content"]
+        cuerpo = msgs[1:]
+    payload = {
+        "contents": convertir_a_gemini(cuerpo),
+        "tools": gemini_tools()
+    }
+    if system:
+        payload["system_instruction"] = {"parts": [{"text": system}]}
+    r = requests.post(
+        f"https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generateContent?key={GEMINI_KEY}",
+        json=payload, timeout=120)
+    data = r.json()
+    if "candidates" not in data:
+        raise Exception(f"Gemini cerebro fallo: {r.status_code} {r.text[:150]}")
+    parts = data["candidates"][0].get("content", {}).get("parts", [])
+    texto = "".join(p.get("text", "") for p in parts)
+    tcs = []
+    for i, p in enumerate(parts):
+        if "function_call" in p:
+            fc = p["function_call"]
+            tcs.append({"id": f"g{i}",
+                        "function": {"name": fc.get("name", ""),
+                                     "arguments": json.dumps(fc.get("args", {}))}})
+    return {"content": texto or None, "tool_calls": tcs or None}
+
+
+def pensar(msgs):
+    try:
+        return pensar_groq(msgs)
+    except Exception as e:
+        print(f"[cerebro] groq no disponible, conmutando a gemini: {e}")
+    return pensar_gemini(msgs)
 
 
 def atender(texto, chat):
     hist = HISTORIAL.setdefault(chat, [])
     hist.append({"role": "user", "content": texto})
-    base = [{"role": "system", "content": SYSTEM_PROMPT}] + hist[-12:]
+    base = [{"role": "system", "content": SYSTEM_PROMPT}] + hist[-8:]
     msgs = []
     for m in base:
-        if m["role"] == "tool" and len(m.get("content", "")) > 2000:
+        if m["role"] == "tool" and len(m.get("content", "")) > 1500:
             m = dict(m)
-            m["content"] = m["content"][:2000] + "\n...[truncado]"
+            m["content"] = m["content"][:1500] + "\n...[truncado]"
         msgs.append(m)
     for _ in range(12):
         try:
@@ -205,7 +285,7 @@ def atender(texto, chat):
                 continue
             raise
         if m.get("tool_calls"):
-            msgs.append(m)
+            msgs.append({"role": "assistant", "content": m.get("content"), "tool_calls": m["tool_calls"]})
             for tc in m["tool_calls"]:
                 args = json.loads(tc["function"]["arguments"])
                 nombre = tc["function"]["name"]
@@ -217,9 +297,9 @@ def atender(texto, chat):
                     salida = registrar_propuesta(args)
                 else:
                     salida = "herramienta desconocida"
-                if len(salida) > 2000:
-                    salida = salida[:2000] + "\n...[truncado]"
-                msgs.append({"role": "tool", "tool_call_id": tc["id"], "content": salida})
+                if len(salida) > 1500:
+                    salida = salida[:1500] + "\n...[truncado]"
+                msgs.append({"role": "tool", "name": nombre, "tool_call_id": tc["id"], "content": salida})
         else:
             r = m.get("content") or "(sin respuesta)"
             hist.append({"role": "assistant", "content": r})
