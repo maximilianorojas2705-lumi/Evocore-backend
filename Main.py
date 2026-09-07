@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Request
-import subprocess, sys, io, contextlib, os, json, threading, time
+import subprocess, sys, io, contextlib, os, json, threading
 
 app = FastAPI()
 TOKEN = "evo2026"
@@ -40,7 +40,7 @@ TOOLS = [
 ]
 
 HISTORIAL = {}
-STATE = {"last_btc": None, "last_commit": None, "last_reviewed": {}}
+STATE = {"last_btc": None, "last_commits": {}}
 MODELOS_CACHE = {"groq": None, "gemini": None}
 
 
@@ -75,10 +75,8 @@ def candidato_gemini():
         "gemini-3.1-flash-lite-preview",
         "gemini-flash-lite-latest"
     ]
-    
     if MODELOS_CACHE["gemini"] and MODELOS_CACHE["gemini"] in modelos_validos:
         return MODELOS_CACHE["gemini"]
-    
     MODELOS_CACHE["gemini"] = modelos_validos[0]
     return modelos_validos[0]
 
@@ -105,30 +103,22 @@ def candidato_groq():
 def llamar_obrero(tarea):
     import requests
     modelos = ["gemini-3-flash-preview", "gemini-3.1-flash-lite-preview", "gemini-flash-lite-latest"]
-    
     for modelo in modelos:
         try:
             r = requests.post(
                 f"https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generateContent?key={GEMINI_KEY}",
                 json={"contents": [{"parts": [{"text": tarea}]}]}, timeout=90)
-            
             if r.status_code == 200:
                 data = r.json()
                 if "candidates" in data and len(data["candidates"]) > 0:
                     MODELOS_CACHE["gemini"] = modelo
                     return data["candidates"][0]["content"]["parts"][0]["text"][:4000]
-            
             if r.status_code in [404, 503, 429]:
                 continue
-            
             return f"obrero gemini fallo ({modelo}): {r.status_code} {r.text[:200]}"
-        
-        except requests.exceptions.Timeout:
+        except Exception:
             continue
-        except Exception as e:
-            continue
-    
-    return f"obrero gemini fallo: todos los modelos agotados"
+    return "obrero gemini fallo: todos los modelos agotados"
 
 
 def pensar(msgs):
@@ -186,37 +176,24 @@ def procesar(texto, chat):
 
 
 def revisar_commit(repo, sha, mensaje):
-    """Revisa un commit y envía análisis por Telegram"""
     import requests
-    
-    # Obtener el diff del commit
-    r = requests.get(f"https://api.github.com/repos/{repo}/commits/{sha}",
-                     headers={"Authorization": f"Bearer {GH_TOKEN}"},
-                     timeout=30)
-    if r.status_code != 200:
-        return
-    
-    data = r.json()
-    archivos = data.get("files", [])
-    
-    # Construir resumen del diff
-    diff_resumen = []
-    for archivo in archivos[:10]:  # Limitar a 10 archivos
-        filename = archivo["filename"]
-        status = archivo["status"]
-        additions = archivo.get("additions", 0)
-        deletions = archivo.get("deletions", 0)
-        patch = archivo.get("patch", "")[:1000]  # Primeros 1000 chars del diff
-        
-        diff_resumen.append(f"📄 {filename} ({status}, +{additions}/-{deletions})\n{patch}")
-    
-    if not diff_resumen:
-        return
-    
-    diff_texto = "\n\n".join(diff_resumen)[:3500]
-    
-    # Delegar análisis al obrero si es complejo, sino lo hace el jefe
-    tarea_analisis = f"""Analiza este commit de Maxi y dame feedback conciso:
+    try:
+        r = requests.get(f"https://api.github.com/repos/{repo}/commits/{sha}",
+                         headers={"Authorization": f"Bearer {GH_TOKEN}"},
+                         timeout=30)
+        if r.status_code != 200:
+            return
+        data = r.json()
+        archivos = data.get("files", [])
+        diff_resumen = []
+        for archivo in archivos[:10]:
+            patch = archivo.get("patch", "")[:1000]
+            diff_resumen.append(
+                f"📄 {archivo['filename']} ({archivo['status']}, +{archivo.get('additions',0)}/-{archivo.get('deletions',0)})\n{patch}")
+        if not diff_resumen:
+            return
+        diff_texto = "\n\n".join(diff_resumen)[:3500]
+        tarea = f"""Analiza este commit de Maxi y dame feedback conciso:
 
 REPO: {repo}
 COMMIT: {mensaje}
@@ -230,12 +207,13 @@ Dame:
 4. 🐛 Posibles bugs (si ves alguno)
 
 Sé directo y técnico. Máximo 200 palabras."""
-    
-    analisis = llamar_obrero(tarea_analisis)
-    
-    # Enviar por Telegram
-    telegram_msg = f"🔍 **Revisión de commit**\n\n{analisis}"
-    enviar_telegram(telegram_msg)
+        analisis = llamar_obrero(tarea)
+        if "fallo" in analisis[:30]:
+            nombres = ", ".join(a["filename"] for a in archivos[:5])
+            analisis = f"📝 Commit: {mensaje}\n📄 Archivos: {nombres}\n(El obrero no estaba disponible; revisión profunda pendiente)"
+        enviar_telegram(f"🔍 Revisión de commit en {repo.split('/')[-1]}:\n\n{analisis}")
+    except Exception:
+        pass
 
 
 @app.post("/tg")
@@ -251,8 +229,6 @@ async def tg(req: Request):
 
 def latido():
     import requests
-    
-    # Bitcoin
     try:
         r = requests.get('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_24hr_change=true', timeout=15).json()
         p = r['bitcoin']['usd']
@@ -262,27 +238,20 @@ def latido():
         STATE["last_btc"] = p
     except Exception:
         pass
-    
-    # Commits (con revisión automática)
     repos = ["maximilianorojas2705-lumi/Earnfi", "maximilianorojas2705-lumi/nexus-backend"]
-    
     for repo in repos:
         try:
             c = requests.get(f'https://api.github.com/repos/{repo}/commits?per_page=1',
-                           headers={"Authorization": f"Bearer {GH_TOKEN}"},
-                           timeout=15).json()
+                             headers={"Authorization": f"Bearer {GH_TOKEN}"},
+                             timeout=15).json()
             if not c:
                 continue
-            
             sha = c[0]['sha']
             mensaje = c[0]['commit']['message'][:80]
-            
-            # Si es un commit nuevo y no lo revisamos antes
-            if STATE["last_commit"] and sha != STATE["last_commit"]:
-                # Revisar el commit
+            previo = STATE["last_commits"].get(repo)
+            if previo and sha != previo:
                 threading.Thread(target=revisar_commit, args=(repo, sha, mensaje), daemon=True).start()
-            
-            STATE["last_commit"] = sha
+            STATE["last_commits"][repo] = sha
         except Exception:
             pass
 
