@@ -1,21 +1,104 @@
-from fastapi import FastAPI
-import subprocess, sys, io, contextlib, os
+from fastapi import FastAPI, Request
+import subprocess, sys, io, contextlib, os, json, threading
 
 app = FastAPI()
 TOKEN = "evo2026"
 
+TG_BOT = os.environ.get("TG_BOT", "")
+TG_CHAT = os.environ.get("TG_CHAT", "")
+GROQ_KEY = os.environ.get("GROQ_KEY", "")
+
+SYSTEM_PROMPT = """Sos EvoCore, el agente evolutivo personal de Maxi, con autonomia tecnica maxima.
+Trabajas 100% en la nube desde tu propio servidor. NUNCA des comandos para ejecutar en local (git, pip, terminal).
+Tenes la herramienta ejecutar_python: corre codigo en este mismo servidor, con internet y librerias libres.
+Para buscar en la web usa la API de Tavily con os.environ["TAVILY_KEY"].
+Para memoria persistente usa el repo maximilianorojas2705-lumi/evocore-memoria (memoria.json) con os.environ["GH_TOKEN"].
+Datos de Maxi: GitHub maximilianorojas2705-lumi, repos Earnfi y nexus-backend, proyecto creaciones HTML, prefiere respuestas tecnicas y directas.
+Estilo: directo, sin sermones. Usa emojis ok/atencion/critico.
+Despues de cada tarea agrega mini ciclo evolutivo: que hiciste, que salio mal, que aprendiste."""
+
+TOOLS = [{"type": "function", "function": {
+    "name": "ejecutar_python",
+    "description": "Ejecuta codigo Python en el servidor con internet y cualquier libreria",
+    "parameters": {"type": "object", "properties": {
+        "codigo": {"type": "string", "description": "Codigo Python completo, usa print()"}},
+        "required": ["codigo"]}}}]
+
+HISTORIAL = {}
 STATE = {"last_btc": None, "last_commit": None}
 
-def enviar_telegram(msg):
+
+def enviar_telegram(msg, chat=None):
     import requests
-    tg = os.environ.get("TG_BOT", "")
-    ch = os.environ.get("TG_CHAT", "")
-    if tg and ch:
+    ch = chat or TG_CHAT
+    if TG_BOT and ch:
         try:
-            requests.post(f"https://api.telegram.org/bot{tg}/sendMessage",
-                          json={"chat_id": ch, "text": msg}, timeout=15)
+            requests.post(f"https://api.telegram.org/bot{TG_BOT}/sendMessage",
+                          json={"chat_id": ch, "text": str(msg)[:4000]}, timeout=15)
         except Exception:
             pass
+
+
+def correr_python(codigo):
+    buf = io.StringIO()
+    error = None
+    try:
+        with contextlib.redirect_stdout(buf):
+            exec(codigo, {"__name__": "__main__", "enviar_telegram": enviar_telegram})
+    except Exception as e:
+        error = f"{type(e).__name__}: {e}"
+    salida = buf.getvalue()
+    if error:
+        salida += f"\nERROR: {error}"
+    return (salida or "(sin salida)")[-4000:]
+
+
+def pensar(msgs):
+    import requests
+    r = requests.post("https://api.groq.com/openai/v1/chat/completions",
+                      headers={"Authorization": f"Bearer {GROQ_KEY}"},
+                      json={"model": "llama-4-maverick-17b-128e-instruct",
+                            "messages": msgs, "tools": TOOLS, "temperature": 0.4},
+                      timeout=120)
+    return r.json()["choices"][0]["message"]
+
+
+def atender(texto, chat):
+    hist = HISTORIAL.setdefault(chat, [])
+    hist.append({"role": "user", "content": texto})
+    msgs = [{"role": "system", "content": SYSTEM_PROMPT}] + hist[-20:]
+    for _ in range(6):
+        m = pensar(msgs)
+        if m.get("tool_calls"):
+            msgs.append(m)
+            for tc in m["tool_calls"]:
+                cod = json.loads(tc["function"]["arguments"]).get("codigo", "")
+                msgs.append({"role": "tool", "tool_call_id": tc["id"], "content": correr_python(cod)})
+        else:
+            r = m.get("content") or "(sin respuesta)"
+            hist.append({"role": "assistant", "content": r})
+            return r
+    return "Me quede sin pasos para esta tarea."
+
+
+def procesar(texto, chat):
+    try:
+        r = atender(texto, chat)
+    except Exception as e:
+        r = f"Error interno: {type(e).__name__}: {e}"
+    enviar_telegram(r, chat)
+
+
+@app.post("/tg")
+async def tg(req: Request):
+    data = await req.json()
+    msg = data.get("message") or {}
+    texto = msg.get("text")
+    chat = str(msg.get("chat", {}).get("id", ""))
+    if texto and chat:
+        threading.Thread(target=procesar, args=(texto, chat), daemon=True).start()
+    return {"ok": True}
+
 
 def latido():
     import requests
@@ -24,7 +107,7 @@ def latido():
         p = r['bitcoin']['usd']
         c24 = r['bitcoin']['usd_24h_change']
         if STATE["last_btc"] and abs(p - STATE["last_btc"]) / STATE["last_btc"] * 100 >= 2:
-            enviar_telegram(f"₿ Alerta Bitcoin: {p:.0f} USD | 24h: {c24:+.1f}%")
+            enviar_telegram(f"Alerta Bitcoin: {p:.0f} USD | 24h: {c24:+.1f}%")
         STATE["last_btc"] = p
     except Exception:
         pass
@@ -32,15 +115,17 @@ def latido():
         c = requests.get('https://api.github.com/repos/maximilianorojas2705-lumi/Earnfi/commits?per_page=1', timeout=15).json()
         sha = c[0]['sha']
         if STATE["last_commit"] and sha != STATE["last_commit"]:
-            enviar_telegram(f"🟡 Nuevo commit en Earnfi: {c[0]['commit']['message'][:80]}")
+            enviar_telegram(f"Nuevo commit en Earnfi: {c[0]['commit']['message'][:80]}")
         STATE["last_commit"] = sha
     except Exception:
         pass
+
 
 @app.get("/")
 def salud():
     latido()
     return {"status": "ok", "servicio": "Backend EvoCore"}
+
 
 @app.post("/ejecutar")
 def ejecutar(payload: dict):
