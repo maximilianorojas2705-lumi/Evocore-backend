@@ -37,20 +37,17 @@ exec(r.text)
 REGLA DE ORO: antes de escribir codigo desde cero, lista tus herramientas y revisa si alguna ya lo hace.
 SI ejecutar_python falla 2 veces seguidas con el mismo error, NO reintentes: detenete y explicame el error con el texto crudo para que lo veamos juntos.
 
-AUTO-MODIFICACIÓN CON APROBACIÓN (OBLIGATORIO usar herramienta proponer_mejora):
-CUANDO detectes una mejora posible a tu código, prompt o comportamiento, DEBES usar la herramienta proponer_mejora.
-NUNCA escribas la propuesta directamente en el texto de respuesta.
-La herramienta va a generar un ID único y enviar la propuesta a Maxi por Telegram.
-Maxi puede aprobarla respondiendo 'apruebo [ID]' o rechazarla con 'rechazo [ID]'.
-Si la aprueba, vas a poder modificar tu propio Main.py en el repo Evocore-backend via GitHub API.
-Ejemplos de mejoras validas:
-- Optimizar el prompt para ahorrar tokens
-- Agregar herramientas al SYSTEM_PROMPT
-- Mejorar el revisor de código
-- Agregar nuevos endpoints
-- Optimizar el latido
-- Agregar caché de resultados
-NO propongas cambios destructivos o que rompan funcionalidad existente sin justificación clara."""
+AUTO-MODIFICACIÓN QUIRÚRGICA CON APROBACIÓN:
+CUANDO detectes una mejora posible a tu código, DEBES usar la herramienta proponer_mejora. NUNCA escribas la propuesta suelta en el texto.
+ANTES de proponer, lee tu Main.py actual completo:
+import requests, os
+r = requests.get('https://raw.githubusercontent.com/maximilianorojas2705-lumi/Evocore-backend/main/Main.py', headers={'Authorization': f'token {os.environ["GH_TOKEN"]}'})
+codigo = r.text
+Después definí en la propuesta:
+- buscar: un fragmento EXACTO, copiado literal del código actual, que sea ÚNICO en el archivo (5 a 30 líneas)
+- reemplazar: el código nuevo exacto que irá en su lugar
+NUNCA propongas reescribir todo el archivo: siempre cambios quirúrgicos y mínimos.
+Maxi aprueba con 'apruebo [ID]' o rechaza con 'rechazo [ID]'. Si aprueba, el sistema reemplaza buscar por reemplazar y commitea solo."""
 
 TOOLS = [
     {"type": "function", "function": {
@@ -67,12 +64,13 @@ TOOLS = [
             "required": ["tarea"]}}},
     {"type": "function", "function": {
         "name": "proponer_mejora",
-        "description": "Propone una mejora al código o comportamiento propio para aprobación de Maxi. OBLIGATORIO usar esta herramienta cuando detectes mejoras.",
+        "description": "Propone un cambio quirurgico al propio Main.py para aprobacion de Maxi",
         "parameters": {"type": "object", "properties": {
             "descripcion": {"type": "string", "description": "Descripción clara de la mejora"},
-            "impacto": {"type": "string", "description": "Qué beneficio trae (ahorro de tokens, mejor rendimiento, nueva funcionalidad)"},
-            "cambio": {"type": "string", "description": "Descripción técnica del cambio a realizar"}},
-            "required": ["descripcion", "impacto", "cambio"]}}}
+            "impacto": {"type": "string", "description": "Qué beneficio trae"},
+            "buscar": {"type": "string", "description": "Fragmento EXACTO y unico del Main.py actual que se va a reemplazar (copiado literal)"},
+            "reemplazar": {"type": "string", "description": "Codigo nuevo exacto que ira en lugar del fragmento"}},
+            "required": ["descripcion", "impacto", "buscar", "reemplazar"]}}}
 ]
 
 HISTORIAL = {}
@@ -215,7 +213,8 @@ def registrar_propuesta(args):
     PROPUESTAS[propuesta_id] = {
         "descripcion": args.get("descripcion", ""),
         "impacto": args.get("impacto", ""),
-        "cambio": args.get("cambio", ""),
+        "buscar": args.get("buscar", ""),
+        "reemplazar": args.get("reemplazar", ""),
         "estado": "pendiente",
         "timestamp": time.time()
     }
@@ -227,81 +226,64 @@ def registrar_propuesta(args):
 🎯 Impacto:
 {args.get("impacto", "")}
 
-🔧 Cambio propuesto:
-{args.get("cambio", "")}
+🔧 Cambio quirúrgico:
+- Busca este fragmento exacto:
+{args.get("buscar", "")[:400]}
+- Lo reemplaza por:
+{args.get("reemplazar", "")[:400]}
 
-Respondé 'apruebo {propuesta_id}' para aplicar la mejora, o 'rechazo {propuesta_id}' para descartarla."""
+Respondé 'apruebo {propuesta_id}' para aplicar, o 'rechazo {propuesta_id}' para descartar."""
     enviar_telegram(msg)
-    return f"Propuesta {propuesta_id} registrada y enviada a Maxi para aprobación"
+    return f"Propuesta {propuesta_id} registrada y enviada a Maxi"
 
 
 def aprobar_propuesta(propuesta_id):
     import requests
     if propuesta_id not in PROPUESTAS:
         return "Propuesta no encontrada"
-    
-    propuesta = PROPUESTAS[propuesta_id]
-    if propuesta["estado"] != "pendiente":
-        return f"Propuesta ya fue {propuesta['estado']}"
-    
-    # Leer Main.py actual
+    p = PROPUESTAS[propuesta_id]
+    if p["estado"] != "pendiente":
+        return f"Propuesta ya fue {p['estado']}"
+    buscar = p.get("buscar", "")
+    reemplazar = p.get("reemplazar", "")
+    if not buscar or not reemplazar:
+        return "Propuesta incompleta: faltan buscar/reemplazar"
     try:
         r = requests.get("https://api.github.com/repos/maximilianorojas2705-lumi/Evocore-backend/contents/Main.py",
-                        headers={"Authorization": f"Bearer {GH_TOKEN}"}, timeout=30)
+                         headers={"Authorization": f"Bearer {GH_TOKEN}"}, timeout=30)
         if r.status_code != 200:
             return f"Error leyendo Main.py: {r.status_code}"
-        
         data = r.json()
         sha = data["sha"]
-        contenido_actual = base64.b64decode(data["content"]).decode()
-        
-        # Pedir al agente que haga el cambio
-        tarea = f"""Aplica esta mejora al código Main.py de EvoCore:
-
-PROPUESTA:
-{propuesta['descripcion']}
-
-CAMBIO TÉCNICO:
-{propuesta['cambio']}
-
-CÓDIGO ACTUAL (primeras 4000 caracteres):
-{contenido_actual[:4000]}
-
-Devuelve SOLO el código Python modificado completo, sin explicaciones ni markdown. Asegurate de que sea válido y funcional."""
-        
-        codigo_nuevo = llamar_obrero(tarea)
-        
-        if len(codigo_nuevo) < 1000:
-            return f"El obrero devolvió código muy corto, probablemente falló: {codigo_nuevo[:200]}"
-        
-        # Commit del cambio
+        contenido = base64.b64decode(data["content"]).decode()
+        if buscar not in contenido:
+            p["estado"] = "fallida"
+            return f"❌ El fragmento 'buscar' no existe en Main.py. Propuesta {propuesta_id} marcada como fallida."
+        if contenido.count(buscar) > 1:
+            return f"⚠️ El fragmento aparece {contenido.count(buscar)} veces: ambiguo. Pedile al agente un snippet más específico."
+        nuevo = contenido.replace(buscar, reemplazar, 1)
         r2 = requests.put("https://api.github.com/repos/maximilianorojas2705-lumi/Evocore-backend/contents/Main.py",
-                         headers={"Authorization": f"Bearer {GH_TOKEN}"},
-                         json={
-                             "message": f"Auto-mejora aprobada: {propuesta['descripcion'][:50]}",
-                             "content": base64.b64encode(codigo_nuevo.encode()).decode(),
-                             "sha": sha
-                         }, timeout=30)
-        
+                          headers={"Authorization": f"Bearer {GH_TOKEN}"},
+                          json={
+                              "message": f"Auto-mejora {propuesta_id}: {p['descripcion'][:40]}",
+                              "content": base64.b64encode(nuevo.encode()).decode(),
+                              "sha": sha
+                          }, timeout=30)
         if r2.status_code in [200, 201]:
-            PROPUESTAS[propuesta_id]["estado"] = "aprobada"
-            enviar_telegram(f"✅ Propuesta {propuesta_id} APROBADA y aplicada. Deploy en progreso...")
-            return "Mejora aplicada exitosamente"
-        else:
-            return f"Error en commit: {r2.status_code} {r2.text[:200]}"
-    
+            p["estado"] = "aprobada"
+            enviar_telegram(f"✅ Propuesta {propuesta_id} APLICADA. Commit hecho, deploy en curso...")
+            return "Mejora aplicada"
+        return f"Error en commit: {r2.status_code} {r2.text[:200]}"
     except Exception as e:
         return f"Error aplicando mejora: {type(e).__name__}: {e}"
 
 
 def procesar(texto, chat):
-    # Manejar aprobaciones
     if texto.lower().startswith("apruebo "):
         propuesta_id = texto[8:].strip()
         resultado = aprobar_propuesta(propuesta_id)
         enviar_telegram(resultado, chat)
         return
-    
     if texto.lower().startswith("rechazo "):
         propuesta_id = texto[8:].strip()
         if propuesta_id in PROPUESTAS:
@@ -310,7 +292,6 @@ def procesar(texto, chat):
         else:
             enviar_telegram("Propuesta no encontrada", chat)
         return
-    
     try:
         r = atender(texto, chat)
     except Exception as e:
