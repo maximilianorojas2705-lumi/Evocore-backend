@@ -26,6 +26,7 @@ TOOLS = [{"type": "function", "function": {
 
 HISTORIAL = {}
 STATE = {"last_btc": None, "last_commit": None}
+MODELO = {"id": None}
 
 
 def enviar_telegram(msg, chat=None):
@@ -53,23 +54,38 @@ def correr_python(codigo):
     return (salida or "(sin salida)")[-4000:]
 
 
+def elegir_modelo():
+    import requests
+    if MODELO["id"]:
+        return MODELO["id"]
+    r = requests.get("https://api.groq.com/openai/v1/models",
+                     headers={"Authorization": f"Bearer {GROQ_KEY}"}, timeout=30)
+    ids = [m["id"] for m in r.json().get("data", [])]
+    prefs = ["maverick", "llama-3.3", "llama-3.1", "qwen", "gpt-oss", "deepseek", "llama"]
+    for p in prefs:
+        for i in ids:
+            if p in i.lower():
+                MODELO["id"] = i
+                return i
+    if ids:
+        MODELO["id"] = ids[0]
+        return ids[0]
+    raise Exception(f"Groq sin modelos: {r.status_code} {r.text[:200]}")
+
+
 def pensar(msgs):
     import requests
-    modelos = ["meta-llama/llama-4-maverick-17b-128e-instruct",
-               "llama-3.3-70b-versatile",
-               "llama-3.1-8b-instant"]
-    ultimo_error = ""
-    for modelo in modelos:
-        r = requests.post("https://api.groq.com/openai/v1/chat/completions",
-                          headers={"Authorization": f"Bearer {GROQ_KEY}"},
-                          json={"model": modelo,
-                                "messages": msgs, "tools": TOOLS, "temperature": 0.4},
-                          timeout=120)
-        data = r.json()
-        if "choices" in data:
-            return data["choices"][0]["message"]
-        ultimo_error = f"{modelo}: {r.status_code} {r.text[:200]}"
-    raise Exception(f"Groq fallo -> {ultimo_error}")
+    modelo = elegir_modelo()
+    r = requests.post("https://api.groq.com/openai/v1/chat/completions",
+                      headers={"Authorization": f"Bearer {GROQ_KEY}"},
+                      json={"model": modelo,
+                            "messages": msgs, "tools": TOOLS, "temperature": 0.4},
+                      timeout=120)
+    data = r.json()
+    if "choices" not in data:
+        MODELO["id"] = None
+        raise Exception(f"Groq fallo -> {r.status_code} {r.text[:200]}")
+    return data["choices"][0]["message"]
 
 
 def atender(texto, chat):
