@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Request
-import subprocess, sys, io, contextlib, os, json, threading
+import subprocess, sys, io, contextlib, os, json, threading, time, base64
 
 app = FastAPI()
 TOKEN = "evo2026"
@@ -35,7 +35,19 @@ r = requests.get('https://raw.githubusercontent.com/maximilianorojas2705-lumi/ev
 exec(r.text)
 - CREAR una nueva: cuando resuelvas una tarea con codigo reutilizable (scraper, parser, analizador, consultor de APIs), guardala como tools/nombre.py con funciones documentadas, usando la API de GitHub (PUT contents con base64, igual que con la memoria).
 REGLA DE ORO: antes de escribir codigo desde cero, lista tus herramientas y revisa si alguna ya lo hace.
-SI ejecutar_python falla 2 veces seguidas con el mismo error, NO reintentes: detenete y explicame el error con el texto crudo para que lo veamos juntos."""
+SI ejecutar_python falla 2 veces seguidas con el mismo error, NO reintentes: detenete y explicame el error con el texto crudo para que lo veamos juntos.
+
+AUTO-MODIFICACIÓN CON APROBACIÓN (podes proponer mejoras a tu propio código):
+Usá la herramienta proponer_mejora para sugerir cambios a tu Main.py, prompt o comportamiento.
+Maxi va a recibir tu propuesta por Telegram y puede aprobarla o rechazarla.
+Si la aprueba, vas a poder modificar tu propio Main.py en el repo Evocore-backend via GitHub API.
+Ejemplos de mejoras validas:
+- Optimizar el prompt para ahorrar tokens
+- Agregar herramientas al SYSTEM_PROMPT
+- Mejorar el revisor de código
+- Agregar nuevos endpoints
+- Optimizar el latido
+NO propongas cambios destructivos o que rompan funcionalidad existente sin justificación clara."""
 
 TOOLS = [
     {"type": "function", "function": {
@@ -49,12 +61,21 @@ TOOLS = [
         "description": "Delega una tarea al obrero Gemini y devuelve su respuesta textual",
         "parameters": {"type": "object", "properties": {
             "tarea": {"type": "string", "description": "Instrucciones completas y autocontenidas para el obrero"}},
-            "required": ["tarea"]}}}
+            "required": ["tarea"]}}},
+    {"type": "function", "function": {
+        "name": "proponer_mejora",
+        "description": "Propone una mejora al código o comportamiento propio para aprobación de Maxi",
+        "parameters": {"type": "object", "properties": {
+            "descripcion": {"type": "string", "description": "Descripción clara de la mejora"},
+            "impacto": {"type": "string", "description": "Qué beneficio trae (ahorro de tokens, mejor rendimiento, nueva funcionalidad)"},
+            "cambio": {"type": "string", "description": "Descripción técnica del cambio a realizar"}},
+            "required": ["descripcion", "impacto", "cambio"]}}}
 ]
 
 HISTORIAL = {}
 STATE = {"last_btc": None, "last_commits": {}}
 MODELOS_CACHE = {"groq": None, "gemini": None}
+PROPUESTAS = {}
 
 
 def enviar_telegram(msg, chat=None):
@@ -73,7 +94,7 @@ def correr_python(codigo):
     error = None
     try:
         with contextlib.redirect_stdout(buf):
-            exec(codigo, {"__name__": "__main__", "enviar_telegram": enviar_telegram})
+            exec(codigo, {"__name__": "__main__", "enviar_telegram": enviar_telegram, "PROPUESTAS": PROPUESTAS})
     except Exception as e:
         error = f"{type(e).__name__}: {e}"
     salida = buf.getvalue()
@@ -173,6 +194,8 @@ def atender(texto, chat):
                     salida = correr_python(args.get("codigo", ""))
                 elif nombre == "delegar_a_obrero":
                     salida = llamar_obrero(args.get("tarea", ""))
+                elif nombre == "proponer_mejora":
+                    salida = registrar_propuesta(args)
                 else:
                     salida = "herramienta desconocida"
                 msgs.append({"role": "tool", "tool_call_id": tc["id"], "content": salida})
@@ -183,7 +206,108 @@ def atender(texto, chat):
     return "Me quede sin pasos para esta tarea."
 
 
+def registrar_propuesta(args):
+    import uuid
+    propuesta_id = str(uuid.uuid4())[:8]
+    PROPUESTAS[propuesta_id] = {
+        "descripcion": args.get("descripcion", ""),
+        "impacto": args.get("impacto", ""),
+        "cambio": args.get("cambio", ""),
+        "estado": "pendiente",
+        "timestamp": time.time()
+    }
+    msg = f"""💡 PROPUESTA DE MEJORA (ID: {propuesta_id})
+
+📝 Descripción:
+{args.get("descripcion", "")}
+
+🎯 Impacto:
+{args.get("impacto", "")}
+
+🔧 Cambio propuesto:
+{args.get("cambio", "")}
+
+Respondé 'apruebo {propuesta_id}' para aplicar la mejora, o 'rechazo {propuesta_id}' para descartarla."""
+    enviar_telegram(msg)
+    return f"Propuesta {propuesta_id} registrada y enviada a Maxi para aprobación"
+
+
+def aprobar_propuesta(propuesta_id):
+    import requests
+    if propuesta_id not in PROPUESTAS:
+        return "Propuesta no encontrada"
+    
+    propuesta = PROPUESTAS[propuesta_id]
+    if propuesta["estado"] != "pendiente":
+        return f"Propuesta ya fue {propuesta['estado']}"
+    
+    # Leer Main.py actual
+    try:
+        r = requests.get("https://api.github.com/repos/maximilianorojas2705-lumi/Evocore-backend/contents/Main.py",
+                        headers={"Authorization": f"Bearer {GH_TOKEN}"}, timeout=30)
+        if r.status_code != 200:
+            return f"Error leyendo Main.py: {r.status_code}"
+        
+        data = r.json()
+        sha = data["sha"]
+        contenido_actual = base64.b64decode(data["content"]).decode()
+        
+        # Pedir al agente que haga el cambio
+        tarea = f"""Aplica esta mejora al código Main.py de EvoCore:
+
+PROPUESTA:
+{propuesta['descripcion']}
+
+CAMBIO TÉCNICO:
+{propuesta['cambio']}
+
+CÓDIGO ACTUAL (primeras 3000 caracteres):
+{contenido_actual[:3000]}
+
+Devuelve SOLO el código Python modificado completo, sin explicaciones ni markdown. Asegurate de que sea válido y funcional."""
+        
+        codigo_nuevo = llamar_obrero(tarea)
+        
+        if len(codigo_nuevo) < 1000:
+            return f"El obrero devolvió código muy corto, probablemente falló: {codigo_nuevo[:200]}"
+        
+        # Commit del cambio
+        r2 = requests.put("https://api.github.com/repos/maximilianorojas2705-lumi/Evocore-backend/contents/Main.py",
+                         headers={"Authorization": f"Bearer {GH_TOKEN}"},
+                         json={
+                             "message": f"Auto-mejora aprobada: {propuesta['descripcion'][:50]}",
+                             "content": base64.b64encode(codigo_nuevo.encode()).decode(),
+                             "sha": sha
+                         }, timeout=30)
+        
+        if r2.status_code in [200, 201]:
+            PROPUESTAS[propuesta_id]["estado"] = "aprobada"
+            enviar_telegram(f"✅ Propuesta {propuesta_id} APROBADA y aplicada. Deploy en progreso...")
+            return "Mejora aplicada exitosamente"
+        else:
+            return f"Error en commit: {r2.status_code} {r2.text[:200]}"
+    
+    except Exception as e:
+        return f"Error aplicando mejora: {type(e).__name__}: {e}"
+
+
 def procesar(texto, chat):
+    # Manejar aprobaciones
+    if texto.lower().startswith("apruebo "):
+        propuesta_id = texto[8:].strip()
+        resultado = aprobar_propuesta(propuesta_id)
+        enviar_telegram(resultado, chat)
+        return
+    
+    if texto.lower().startswith("rechazo "):
+        propuesta_id = texto[8:].strip()
+        if propuesta_id in PROPUESTAS:
+            PROPUESTAS[propuesta_id]["estado"] = "rechazada"
+            enviar_telegram(f"❌ Propuesta {propuesta_id} rechazada", chat)
+        else:
+            enviar_telegram("Propuesta no encontrada", chat)
+        return
+    
     try:
         r = atender(texto, chat)
     except Exception as e:
