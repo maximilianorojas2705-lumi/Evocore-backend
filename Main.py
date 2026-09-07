@@ -182,6 +182,7 @@ def revisar_commit(repo, sha, mensaje):
                          headers={"Authorization": f"Bearer {GH_TOKEN}"},
                          timeout=30)
         if r.status_code != 200:
+            print(f"[revisor] github devolvio {r.status_code} para {sha[:8]}")
             return
         data = r.json()
         archivos = data.get("files", [])
@@ -191,6 +192,7 @@ def revisar_commit(repo, sha, mensaje):
             diff_resumen.append(
                 f"📄 {archivo['filename']} ({archivo['status']}, +{archivo.get('additions',0)}/-{archivo.get('deletions',0)})\n{patch}")
         if not diff_resumen:
+            print(f"[revisor] commit {sha[:8]} sin archivos con diff")
             return
         diff_texto = "\n\n".join(diff_resumen)[:3500]
         tarea = f"""Analiza este commit de Maxi y dame feedback conciso:
@@ -211,9 +213,11 @@ Sé directo y técnico. Máximo 200 palabras."""
         if "fallo" in analisis[:30]:
             nombres = ", ".join(a["filename"] for a in archivos[:5])
             analisis = f"📝 Commit: {mensaje}\n📄 Archivos: {nombres}\n(El obrero no estaba disponible; revisión profunda pendiente)"
+        print(f"[revisor] enviando revision de {repo} {sha[:8]}")
         enviar_telegram(f"🔍 Revisión de commit en {repo.split('/')[-1]}:\n\n{analisis}")
-    except Exception:
-        pass
+        print(f"[revisor] revision enviada ok")
+    except Exception as e:
+        print(f"[revisor] error: {type(e).__name__}: {e}")
 
 
 @app.post("/tg")
@@ -250,13 +254,14 @@ def latido():
             mensaje = c[0]['commit']['message'][:80]
             previo = STATE["last_commits"].get(repo)
             if previo and sha != previo:
+                print(f"[latido] commit nuevo en {repo}: {sha[:8]}")
                 threading.Thread(target=revisar_commit, args=(repo, sha, mensaje), daemon=True).start()
             STATE["last_commits"][repo] = sha
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[latido] error repos: {e}")
 
 
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 def salud():
     latido()
     return {"status": "ok", "servicio": "Backend EvoCore"}
