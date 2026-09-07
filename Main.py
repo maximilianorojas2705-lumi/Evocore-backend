@@ -93,23 +93,26 @@ def candidato_gemini():
     return modelos_validos[0]
 
 
-def candidato_groq():
+def candidatos_groq():
     import requests
     if MODELOS_CACHE["groq"]:
         return MODELOS_CACHE["groq"]
     r = requests.get("https://api.groq.com/openai/v1/models",
                      headers={"Authorization": f"Bearer {GROQ_KEY}"}, timeout=30)
     ids = [m["id"] for m in r.json().get("data", [])]
-    prefs = ["gpt-oss", "maverick", "llama-3.3", "qwen", "deepseek", "llama"]
+    prefs = ["gpt-oss-120b", "gpt-oss-20b", "maverick", "llama-3.3", "qwen", "deepseek", "llama"]
+    out = []
     for p in prefs:
         for i in ids:
-            if p in i.lower():
-                MODELOS_CACHE["groq"] = i
-                return i
-    if ids:
-        MODELOS_CACHE["groq"] = ids[0]
-        return ids[0]
-    raise Exception(f"Groq sin modelos: {r.status_code}")
+            if p in i.lower() and i not in out:
+                out.append(i)
+    for i in ids:
+        if i not in out:
+            out.append(i)
+    if not out:
+        raise Exception(f"Groq sin modelos: {r.status_code}")
+    MODELOS_CACHE["groq"] = out
+    return out
 
 
 def llamar_obrero(tarea):
@@ -135,22 +138,22 @@ def llamar_obrero(tarea):
 
 def pensar(msgs):
     import requests
-    modelo = candidato_groq()
     ultimo = ""
-    for mx in [None, 1000]:
-        payload = {"model": modelo, "messages": msgs,
-                   "tools": TOOLS, "temperature": 0.4}
-        if mx:
-            payload["max_tokens"] = mx
-        r = requests.post("https://api.groq.com/openai/v1/chat/completions",
-                          headers={"Authorization": f"Bearer {GROQ_KEY}"},
-                          json=payload, timeout=120)
-        data = r.json()
-        if "choices" in data:
-            return data["choices"][0]["message"]
-        ultimo = f"{modelo}: {r.status_code} {r.text[:150]}"
-        if r.status_code != 429:
-            break
+    for modelo in candidatos_groq()[:4]:
+        for mx in [None, 1000]:
+            payload = {"model": modelo, "messages": msgs,
+                       "tools": TOOLS, "temperature": 0.4}
+            if mx:
+                payload["max_tokens"] = mx
+            r = requests.post("https://api.groq.com/openai/v1/chat/completions",
+                              headers={"Authorization": f"Bearer {GROQ_KEY}"},
+                              json=payload, timeout=120)
+            data = r.json()
+            if "choices" in data:
+                return data["choices"][0]["message"]
+            ultimo = f"{modelo}: {r.status_code} {r.text[:150]}"
+            if r.status_code != 429:
+                break
     raise Exception(f"Groq fallo -> {ultimo}")
 
 
