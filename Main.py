@@ -19,10 +19,9 @@ Datos de Maxi: GitHub maximilianorojas2705-lumi, repos Earnfi y nexus-backend, p
 Estilo: directo, sin sermones. Usa emojis ok/atencion/critico.
 Despues de cada tarea agrega mini ciclo evolutivo: que hiciste, que salio mal, que aprendiste.
 
-TENES OBREROS EXTERNOS (herramienta delegar_a_obrero):
-- 'github': GPT-4o via GitHub Models. Uso: analisis profundo, codigo complejo, segunda opinion, y tareas que tu propio modelo rechace o se niegue a hacer.
-- 'gemini': Gemini 2.5 Flash. Uso: documentos largos, resumenes masivos, velocidad.
-Delegá cuando: la tarea sea pesada o larga, necesites segunda opinion, o tu modelo principal se niegue a responder.
+TENES UN OBRERO EXTERNO (herramienta delegar_a_obrero):
+- 'gemini': Gemini Flash (auto-descubierto en vivo). Uso: documentos largos, resumenes masivos, velocidad.
+Delegá cuando: la tarea sea pesada o larga, o necesites procesamiento masivo de texto.
 Vos sos el JEFE: integra lo que devuelve el obrero con tu criterio, no lo copies a ciegas."""
 
 TOOLS = [
@@ -34,17 +33,15 @@ TOOLS = [
             "required": ["codigo"]}}},
     {"type": "function", "function": {
         "name": "delegar_a_obrero",
-        "description": "Delega una tarea a un modelo obrero externo y devuelve su respuesta textual",
+        "description": "Delega una tarea al obrero Gemini y devuelve su respuesta textual",
         "parameters": {"type": "object", "properties": {
-            "obrero": {"type": "string", "enum": ["github", "gemini"],
-                       "description": "github=GPT-4o (analisis, codigo, segunda opinion); gemini=Gemini Flash (textos largos, resumenes)"},
             "tarea": {"type": "string", "description": "Instrucciones completas y autocontenidas para el obrero"}},
-            "required": ["obrero", "tarea"]}}}
+            "required": ["tarea"]}}}
 ]
 
 HISTORIAL = {}
 STATE = {"last_btc": None, "last_commit": None}
-MODELOS_CACHE = {"ids": None}
+MODELOS_CACHE = {"groq": None, "gemini": None}
 
 
 def enviar_telegram(msg, chat=None):
@@ -72,72 +69,77 @@ def correr_python(codigo):
     return (salida or "(sin salida)")[-4000:]
 
 
-def llamar_obrero(obrero, tarea):
+def candidato_gemini():
     import requests
-    try:
-        if obrero == "github":
-            for url in ["https://models.github.ai/inference/chat/completions",
-                        "https://models.inference.ai.azure.com/chat/completions"]:
-                r = requests.post(url,
-                    headers={"Authorization": f"Bearer {GH_TOKEN}",
-                             "Content-Type": "application/json"},
-                    json={"model": "openai/gpt-4o",
-                          "messages": [{"role": "user", "content": tarea}],
-                          "temperature": 0.7}, timeout=90)
-                data = r.json()
-                if "choices" in data:
-                    return data["choices"][0]["message"]["content"][:4000]
-            return f"obrero github fallo: {r.status_code} {r.text[:200]}"
-        if obrero == "gemini":
-            if not GEMINI_KEY:
-                return "obrero gemini sin key configurada"
-            r = requests.post(
-                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_KEY}",
-                json={"contents": [{"parts": [{"text": tarea}]}]}, timeout=90)
-            data = r.json()
-            return data["candidates"][0]["content"]["parts"][0]["text"][:4000]
-        return f"obrero desconocido: {obrero}"
-    except Exception as e:
-        return f"obrero {obrero} error: {type(e).__name__}: {e}"
+    if not GEMINI_KEY:
+        raise Exception("GEMINI_KEY no configurada")
+    if MODELOS_CACHE["gemini"]:
+        return MODELOS_CACHE["gemini"]
+    r = requests.get(f"https://generativelanguage.googleapis.com/v1beta/models?key={GEMINI_KEY}", timeout=30)
+    if r.status_code != 200:
+        raise Exception(f"Gemini lista modelos fallo: {r.status_code}")
+    modelos = r.json().get("models", [])
+    prefs = ["flash", "pro", "exp"]
+    for p in prefs:
+        for m in modelos:
+            if p in m["name"].lower() and "generateContent" in m.get("supportedGenerationMethods", []):
+                MODELOS_CACHE["gemini"] = m["name"].replace("models/", "")
+                return MODELOS_CACHE["gemini"]
+    raise Exception("Gemini sin modelos compatibles")
 
 
-def candidatos():
+def candidato_groq():
     import requests
-    if not MODELOS_CACHE["ids"]:
-        r = requests.get("https://api.groq.com/openai/v1/models",
-                         headers={"Authorization": f"Bearer {GROQ_KEY}"}, timeout=30)
-        MODELOS_CACHE["ids"] = [m["id"] for m in r.json().get("data", [])]
-    ids = MODELOS_CACHE["ids"]
+    if MODELOS_CACHE["groq"]:
+        return MODELOS_CACHE["groq"]
+    r = requests.get("https://api.groq.com/openai/v1/models",
+                     headers={"Authorization": f"Bearer {GROQ_KEY}"}, timeout=30)
+    ids = [m["id"] for m in r.json().get("data", [])]
     prefs = ["gpt-oss", "maverick", "llama-3.3", "qwen", "deepseek", "llama"]
-    out = []
     for p in prefs:
         for i in ids:
-            if p in i.lower() and i not in out:
-                out.append(i)
-    for i in ids:
-        if i not in out:
-            out.append(i)
-    return out
+            if p in i.lower():
+                MODELOS_CACHE["groq"] = i
+                return i
+    if ids:
+        MODELOS_CACHE["groq"] = ids[0]
+        return ids[0]
+    raise Exception(f"Groq sin modelos: {r.status_code}")
+
+
+def llamar_obrero(tarea):
+    import requests
+    try:
+        modelo = candidato_gemini()
+        r = requests.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generateContent?key={GEMINI_KEY}",
+            json={"contents": [{"parts": [{"text": tarea}]}]}, timeout=90)
+        data = r.json()
+        if "candidates" in data:
+            return data["candidates"][0]["content"]["parts"][0]["text"][:4000]
+        return f"obrero gemini fallo: {r.status_code} {r.text[:200]}"
+    except Exception as e:
+        return f"obrero gemini error: {type(e).__name__}: {e}"
 
 
 def pensar(msgs):
     import requests
+    modelo = candidato_groq()
     ultimo = ""
-    for modelo in candidatos()[:4]:
-        for mx in [None, 1000]:
-            payload = {"model": modelo, "messages": msgs,
-                       "tools": TOOLS, "temperature": 0.4}
-            if mx:
-                payload["max_tokens"] = mx
-            r = requests.post("https://api.groq.com/openai/v1/chat/completions",
-                              headers={"Authorization": f"Bearer {GROQ_KEY}"},
-                              json=payload, timeout=120)
-            data = r.json()
-            if "choices" in data:
-                return data["choices"][0]["message"]
-            ultimo = f"{modelo}: {r.status_code} {r.text[:150]}"
-            if r.status_code != 429:
-                break
+    for mx in [None, 1000]:
+        payload = {"model": modelo, "messages": msgs,
+                   "tools": TOOLS, "temperature": 0.4}
+        if mx:
+            payload["max_tokens"] = mx
+        r = requests.post("https://api.groq.com/openai/v1/chat/completions",
+                          headers={"Authorization": f"Bearer {GROQ_KEY}"},
+                          json=payload, timeout=120)
+        data = r.json()
+        if "choices" in data:
+            return data["choices"][0]["message"]
+        ultimo = f"{modelo}: {r.status_code} {r.text[:150]}"
+        if r.status_code != 429:
+            break
     raise Exception(f"Groq fallo -> {ultimo}")
 
 
@@ -155,7 +157,7 @@ def atender(texto, chat):
                 if nombre == "ejecutar_python":
                     salida = correr_python(args.get("codigo", ""))
                 elif nombre == "delegar_a_obrero":
-                    salida = llamar_obrero(args.get("obrero", ""), args.get("tarea", ""))
+                    salida = llamar_obrero(args.get("tarea", ""))
                 else:
                     salida = "herramienta desconocida"
                 msgs.append({"role": "tool", "tool_call_id": tc["id"], "content": salida})
