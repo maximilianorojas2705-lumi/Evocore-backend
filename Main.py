@@ -37,9 +37,11 @@ exec(r.text)
 REGLA DE ORO: antes de escribir codigo desde cero, lista tus herramientas y revisa si alguna ya lo hace.
 SI ejecutar_python falla 2 veces seguidas con el mismo error, NO reintentes: detenete y explicame el error con el texto crudo para que lo veamos juntos.
 
-AUTO-MODIFICACIÓN CON APROBACIÓN (podes proponer mejoras a tu propio código):
-Usá la herramienta proponer_mejora para sugerir cambios a tu Main.py, prompt o comportamiento.
-Maxi va a recibir tu propuesta por Telegram y puede aprobarla o rechazarla.
+AUTO-MODIFICACIÓN CON APROBACIÓN (OBLIGATORIO usar herramienta proponer_mejora):
+CUANDO detectes una mejora posible a tu código, prompt o comportamiento, DEBES usar la herramienta proponer_mejora.
+NUNCA escribas la propuesta directamente en el texto de respuesta.
+La herramienta va a generar un ID único y enviar la propuesta a Maxi por Telegram.
+Maxi puede aprobarla respondiendo 'apruebo [ID]' o rechazarla con 'rechazo [ID]'.
 Si la aprueba, vas a poder modificar tu propio Main.py en el repo Evocore-backend via GitHub API.
 Ejemplos de mejoras validas:
 - Optimizar el prompt para ahorrar tokens
@@ -47,6 +49,7 @@ Ejemplos de mejoras validas:
 - Mejorar el revisor de código
 - Agregar nuevos endpoints
 - Optimizar el latido
+- Agregar caché de resultados
 NO propongas cambios destructivos o que rompan funcionalidad existente sin justificación clara."""
 
 TOOLS = [
@@ -64,7 +67,7 @@ TOOLS = [
             "required": ["tarea"]}}},
     {"type": "function", "function": {
         "name": "proponer_mejora",
-        "description": "Propone una mejora al código o comportamiento propio para aprobación de Maxi",
+        "description": "Propone una mejora al código o comportamiento propio para aprobación de Maxi. OBLIGATORIO usar esta herramienta cuando detectes mejoras.",
         "parameters": {"type": "object", "properties": {
             "descripcion": {"type": "string", "description": "Descripción clara de la mejora"},
             "impacto": {"type": "string", "description": "Qué beneficio trae (ahorro de tokens, mejor rendimiento, nueva funcionalidad)"},
@@ -261,8 +264,8 @@ PROPUESTA:
 CAMBIO TÉCNICO:
 {propuesta['cambio']}
 
-CÓDIGO ACTUAL (primeras 3000 caracteres):
-{contenido_actual[:3000]}
+CÓDIGO ACTUAL (primeras 4000 caracteres):
+{contenido_actual[:4000]}
 
 Devuelve SOLO el código Python modificado completo, sin explicaciones ni markdown. Asegurate de que sea válido y funcional."""
         
