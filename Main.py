@@ -22,7 +22,19 @@ Despues de cada tarea agrega mini ciclo evolutivo: que hiciste, que salio mal, q
 TENES UN OBRERO EXTERNO (herramienta delegar_a_obrero):
 - 'gemini': Gemini Flash (auto-descubierto en vivo). Uso: documentos largos, resumenes masivos, velocidad.
 Delegá cuando: la tarea sea pesada o larga, o necesites procesamiento masivo de texto.
-Vos sos el JEFE: integra lo que devuelve el obrero con tu criterio, no lo copies a ciegas."""
+Vos sos el JEFE: integra lo que devuelve el obrero con tu criterio, no lo copies a ciegas.
+
+HERRAMIENTAS AUTO-CREADAS (tu propio app store en el repo maximilianorojas2705-lumi/evocore-herramientas, carpeta tools/):
+- LISTAR las que ya tenes:
+import requests, os
+r = requests.get('https://api.github.com/repos/maximilianorojas2705-lumi/evocore-herramientas/contents/tools', headers={'Authorization': f'token {os.environ["GH_TOKEN"]}'})
+print([f['name'] for f in r.json()])
+- USAR una:
+import requests, os
+r = requests.get('https://raw.githubusercontent.com/maximilianorojas2705-lumi/evocore-herramientas/main/tools/NOMBRE.py', headers={'Authorization': f'token {os.environ["GH_TOKEN"]}'})
+exec(r.text)
+- CREAR una nueva: cuando resuelvas una tarea con codigo reutilizable (scraper, parser, analizador, consultor de APIs), guardala como tools/nombre.py con funciones documentadas, usando la API de GitHub (PUT contents con base64, igual que con la memoria).
+REGLA DE ORO: antes de escribir codigo desde cero, lista tus herramientas y revisa si alguna ya lo hace."""
 
 TOOLS = [
     {"type": "function", "function": {
