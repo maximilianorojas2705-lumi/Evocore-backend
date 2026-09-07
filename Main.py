@@ -7,6 +7,8 @@ TOKEN = "evo2026"
 TG_BOT = os.environ.get("TG_BOT", "")
 TG_CHAT = os.environ.get("TG_CHAT", "")
 GROQ_KEY = os.environ.get("GROQ_KEY", "")
+GEMINI_KEY = os.environ.get("GEMINI_KEY", "")
+GH_TOKEN = os.environ.get("GH_TOKEN", "")
 
 SYSTEM_PROMPT = """Sos EvoCore, el agente evolutivo personal de Maxi, con autonomia tecnica maxima.
 Trabajas 100% en la nube desde tu propio servidor. NUNCA des comandos para ejecutar en local (git, pip, terminal).
@@ -15,14 +17,30 @@ Para buscar en la web usa la API de Tavily con os.environ["TAVILY_KEY"].
 Para memoria persistente usa el repo maximilianorojas2705-lumi/evocore-memoria (memoria.json) con os.environ["GH_TOKEN"].
 Datos de Maxi: GitHub maximilianorojas2705-lumi, repos Earnfi y nexus-backend, proyecto creaciones HTML, prefiere respuestas tecnicas y directas.
 Estilo: directo, sin sermones. Usa emojis ok/atencion/critico.
-Despues de cada tarea agrega mini ciclo evolutivo: que hiciste, que salio mal, que aprendiste."""
+Despues de cada tarea agrega mini ciclo evolutivo: que hiciste, que salio mal, que aprendiste.
 
-TOOLS = [{"type": "function", "function": {
-    "name": "ejecutar_python",
-    "description": "Ejecuta codigo Python en el servidor con internet y cualquier libreria",
-    "parameters": {"type": "object", "properties": {
-        "codigo": {"type": "string", "description": "Codigo Python completo, usa print()"}},
-        "required": ["codigo"]}}}]
+TENES OBREROS EXTERNOS (herramienta delegar_a_obrero):
+- 'github': GPT-4o via GitHub Models. Uso: analisis profundo, codigo complejo, segunda opinion, y tareas que tu propio modelo rechace o se niegue a hacer.
+- 'gemini': Gemini 2.5 Flash. Uso: documentos largos, resumenes masivos, velocidad.
+Delegá cuando: la tarea sea pesada o larga, necesites segunda opinion, o tu modelo principal se niegue a responder.
+Vos sos el JEFE: integra lo que devuelve el obrero con tu criterio, no lo copies a ciegas."""
+
+TOOLS = [
+    {"type": "function", "function": {
+        "name": "ejecutar_python",
+        "description": "Ejecuta codigo Python en el servidor con internet y cualquier libreria",
+        "parameters": {"type": "object", "properties": {
+            "codigo": {"type": "string", "description": "Codigo Python completo, usa print()"}},
+            "required": ["codigo"]}}},
+    {"type": "function", "function": {
+        "name": "delegar_a_obrero",
+        "description": "Delega una tarea a un modelo obrero externo y devuelve su respuesta textual",
+        "parameters": {"type": "object", "properties": {
+            "obrero": {"type": "string", "enum": ["github", "gemini"],
+                       "description": "github=GPT-4o (analisis, codigo, segunda opinion); gemini=Gemini Flash (textos largos, resumenes)"},
+            "tarea": {"type": "string", "description": "Instrucciones completas y autocontenidas para el obrero"}},
+            "required": ["obrero", "tarea"]}}}
+]
 
 HISTORIAL = {}
 STATE = {"last_btc": None, "last_commit": None}
@@ -52,6 +70,35 @@ def correr_python(codigo):
     if error:
         salida += f"\nERROR: {error}"
     return (salida or "(sin salida)")[-4000:]
+
+
+def llamar_obrero(obrero, tarea):
+    import requests
+    try:
+        if obrero == "github":
+            for url in ["https://models.github.ai/inference/chat/completions",
+                        "https://models.inference.ai.azure.com/chat/completions"]:
+                r = requests.post(url,
+                    headers={"Authorization": f"Bearer {GH_TOKEN}",
+                             "Content-Type": "application/json"},
+                    json={"model": "openai/gpt-4o",
+                          "messages": [{"role": "user", "content": tarea}],
+                          "temperature": 0.7}, timeout=90)
+                data = r.json()
+                if "choices" in data:
+                    return data["choices"][0]["message"]["content"][:4000]
+            return f"obrero github fallo: {r.status_code} {r.text[:200]}"
+        if obrero == "gemini":
+            if not GEMINI_KEY:
+                return "obrero gemini sin key configurada"
+            r = requests.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_KEY}",
+                json={"contents": [{"parts": [{"text": tarea}]}]}, timeout=90)
+            data = r.json()
+            return data["candidates"][0]["content"]["parts"][0]["text"][:4000]
+        return f"obrero desconocido: {obrero}"
+    except Exception as e:
+        return f"obrero {obrero} error: {type(e).__name__}: {e}"
 
 
 def candidatos():
@@ -98,13 +145,20 @@ def atender(texto, chat):
     hist = HISTORIAL.setdefault(chat, [])
     hist.append({"role": "user", "content": texto})
     msgs = [{"role": "system", "content": SYSTEM_PROMPT}] + hist[-20:]
-    for _ in range(6):
+    for _ in range(8):
         m = pensar(msgs)
         if m.get("tool_calls"):
             msgs.append(m)
             for tc in m["tool_calls"]:
-                cod = json.loads(tc["function"]["arguments"]).get("codigo", "")
-                msgs.append({"role": "tool", "tool_call_id": tc["id"], "content": correr_python(cod)})
+                args = json.loads(tc["function"]["arguments"])
+                nombre = tc["function"]["name"]
+                if nombre == "ejecutar_python":
+                    salida = correr_python(args.get("codigo", ""))
+                elif nombre == "delegar_a_obrero":
+                    salida = llamar_obrero(args.get("obrero", ""), args.get("tarea", ""))
+                else:
+                    salida = "herramienta desconocida"
+                msgs.append({"role": "tool", "tool_call_id": tc["id"], "content": salida})
         else:
             r = m.get("content") or "(sin respuesta)"
             hist.append({"role": "assistant", "content": r})
