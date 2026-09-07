@@ -70,41 +70,18 @@ def correr_python(codigo):
 
 
 def candidato_gemini():
-    import requests
-    if not GEMINI_KEY:
-        raise Exception("GEMINI_KEY no configurada")
-    if MODELOS_CACHE["gemini"]:
+    # Modelos que VERIFICADAMENTE funcionan con esta key
+    modelos_validos = [
+        "gemini-3-flash-preview",
+        "gemini-3.1-flash-lite-preview",
+        "gemini-flash-lite-latest"
+    ]
+    
+    if MODELOS_CACHE["gemini"] and MODELOS_CACHE["gemini"] in modelos_validos:
         return MODELOS_CACHE["gemini"]
     
-    r = requests.get(f"https://generativelanguage.googleapis.com/v1beta/models?key={GEMINI_KEY}", timeout=30)
-    if r.status_code != 200:
-        raise Exception(f"Gemini lista modelos fallo: {r.status_code}")
-    
-    modelos = r.json().get("models", [])
-    
-    # Filtrar modelos que soporten generateContent
-    compatibles = [
-        m for m in modelos 
-        if "generateContent" in m.get("supportedGenerationMethods", [])
-    ]
-    
-    # Priorizar versiones: 3.6 > 3.x > 2.x > flash-latest
-    prioridades = [
-        lambda m: "3.6" in m["name"] and "flash" in m["name"],
-        lambda m: "3." in m["name"] and "flash" in m["name"],
-        lambda m: "2.5" in m["name"] and "flash" in m["name"],
-        lambda m: "flash-latest" in m["name"],
-        lambda m: "flash" in m["name"]
-    ]
-    
-    for filtro in prioridades:
-        for m in compatibles:
-            if filtro(m):
-                modelo_id = m["name"].replace("models/", "")
-                MODELOS_CACHE["gemini"] = modelo_id
-                return modelo_id
-    
-    raise Exception("Gemini sin modelos compatibles")
+    MODELOS_CACHE["gemini"] = modelos_validos[0]
+    return modelos_validos[0]
 
 
 def candidato_groq():
@@ -128,29 +105,33 @@ def candidato_groq():
 
 def llamar_obrero(tarea):
     import requests
-    try:
-        modelo = candidato_gemini()
-        r = requests.post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generateContent?key={GEMINI_KEY}",
-            json={"contents": [{"parts": [{"text": tarea}]}]}, timeout=90)
-        data = r.json()
-        if "candidates" in data:
-            return data["candidates"][0]["content"]["parts"][0]["text"][:4000]
-        
-        # Si falla con 404, limpiar cache y reintentar
-        if r.status_code == 404:
-            MODELOS_CACHE["gemini"] = None
-            modelo = candidato_gemini()
+    modelos = ["gemini-3-flash-preview", "gemini-3.1-flash-lite-preview", "gemini-flash-lite-latest"]
+    
+    for modelo in modelos:
+        try:
             r = requests.post(
                 f"https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generateContent?key={GEMINI_KEY}",
                 json={"contents": [{"parts": [{"text": tarea}]}]}, timeout=90)
-            data = r.json()
-            if "candidates" in data:
-                return data["candidates"][0]["content"]["parts"][0]["text"][:4000]
+            
+            if r.status_code == 200:
+                data = r.json()
+                if "candidates" in data and len(data["candidates"]) > 0:
+                    MODELOS_CACHE["gemini"] = modelo
+                    return data["candidates"][0]["content"]["parts"][0]["text"][:4000]
+            
+            # Si no es 200, probar siguiente modelo
+            if r.status_code in [404, 503, 429]:
+                continue
+            
+            # Error real, devolver mensaje
+            return f"obrero gemini fallo ({modelo}): {r.status_code} {r.text[:200]}"
         
-        return f"obrero gemini fallo: {r.status_code} {r.text[:200]}"
-    except Exception as e:
-        return f"obrero gemini error: {type(e).__name__}: {e}"
+        except requests.exceptions.Timeout:
+            continue
+        except Exception as e:
+            continue
+    
+    return f"obrero gemini fallo: todos los modelos agotados"
 
 
 def pensar(msgs):
