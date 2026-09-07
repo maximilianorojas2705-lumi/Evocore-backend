@@ -55,12 +55,21 @@ def correr_python(codigo):
 
 def pensar(msgs):
     import requests
-    r = requests.post("https://api.groq.com/openai/v1/chat/completions",
-                      headers={"Authorization": f"Bearer {GROQ_KEY}"},
-                      json={"model": "llama-4-maverick-17b-128e-instruct",
-                            "messages": msgs, "tools": TOOLS, "temperature": 0.4},
-                      timeout=120)
-    return r.json()["choices"][0]["message"]
+    modelos = ["meta-llama/llama-4-maverick-17b-128e-instruct",
+               "llama-3.3-70b-versatile",
+               "llama-3.1-8b-instant"]
+    ultimo_error = ""
+    for modelo in modelos:
+        r = requests.post("https://api.groq.com/openai/v1/chat/completions",
+                          headers={"Authorization": f"Bearer {GROQ_KEY}"},
+                          json={"model": modelo,
+                                "messages": msgs, "tools": TOOLS, "temperature": 0.4},
+                          timeout=120)
+        data = r.json()
+        if "choices" in data:
+            return data["choices"][0]["message"]
+        ultimo_error = f"{modelo}: {r.status_code} {r.text[:200]}"
+    raise Exception(f"Groq fallo -> {ultimo_error}")
 
 
 def atender(texto, chat):
