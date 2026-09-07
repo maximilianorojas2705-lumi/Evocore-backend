@@ -34,7 +34,8 @@ import requests, os
 r = requests.get('https://raw.githubusercontent.com/maximilianorojas2705-lumi/evocore-herramientas/main/tools/NOMBRE.py', headers={'Authorization': f'token {os.environ["GH_TOKEN"]}'})
 exec(r.text)
 - CREAR una nueva: cuando resuelvas una tarea con codigo reutilizable (scraper, parser, analizador, consultor de APIs), guardala como tools/nombre.py con funciones documentadas, usando la API de GitHub (PUT contents con base64, igual que con la memoria).
-REGLA DE ORO: antes de escribir codigo desde cero, lista tus herramientas y revisa si alguna ya lo hace."""
+REGLA DE ORO: antes de escribir codigo desde cero, lista tus herramientas y revisa si alguna ya lo hace.
+SI ejecutar_python falla 2 veces seguidas con el mismo error, NO reintentes: detenete y explicame el error con el texto crudo para que lo veamos juntos."""
 
 TOOLS = [
     {"type": "function", "function": {
@@ -161,7 +162,7 @@ def atender(texto, chat):
     hist = HISTORIAL.setdefault(chat, [])
     hist.append({"role": "user", "content": texto})
     msgs = [{"role": "system", "content": SYSTEM_PROMPT}] + hist[-20:]
-    for _ in range(8):
+    for _ in range(12):
         m = pensar(msgs)
         if m.get("tool_calls"):
             msgs.append(m)
