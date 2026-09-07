@@ -37,12 +37,18 @@ exec(r.text)
 REGLA DE ORO: antes de escribir codigo desde cero, lista tus herramientas y revisa si alguna ya lo hace.
 SI ejecutar_python falla 2 veces seguidas con el mismo error, NO reintentes: detenete y explicame el error con el texto crudo para que lo veamos juntos.
 
-AUTO-MODIFICACIÓN QUIRÚRGICA CON APROBACIÓN:
-CUANDO detectes una mejora posible a tu código, DEBES usar la herramienta proponer_mejora. NUNCA escribas la propuesta suelta en el texto.
-ANTES de proponer, lee tu Main.py actual completo:
+REGLA ANTI-ATRAGANTAMIENTO (muy importante):
+Cuando leas archivos grandes (tu Main.py, memoria.json, diffs, etc.), NUNCA imprimas el contenido completo: rompe el limite de tokens de entrada.
+Imprimi SOLO el fragmento que necesitas, usando busqueda y rebanado. Ejemplo:
 import requests, os
 r = requests.get('https://raw.githubusercontent.com/maximilianorojas2705-lumi/Evocore-backend/main/Main.py', headers={'Authorization': f'token {os.environ["GH_TOKEN"]}'})
 codigo = r.text
+i = codigo.find('def aprobar_propuesta')
+print(codigo[i:i+1200])
+
+AUTO-MODIFICACIÓN QUIRÚRGICA CON APROBACIÓN:
+CUANDO detectes una mejora posible a tu código, DEBES usar la herramienta proponer_mejora. NUNCA escribas la propuesta suelta en el texto.
+ANTES de proponer, lee SOLO el fragmento relevante de tu Main.py (ver regla anti-atragantamiento).
 Después definí en la propuesta:
 - buscar: un fragmento EXACTO, copiado literal del código actual, que sea ÚNICO en el archivo (5 a 30 líneas)
 - reemplazar: el código nuevo exacto que irá en su lugar
@@ -101,7 +107,7 @@ def correr_python(codigo):
     salida = buf.getvalue()
     if error:
         salida += f"\nERROR: {error}"
-    return (salida or "(sin salida)")[-4000:]
+    return (salida or "(sin salida)")[-3000:]
 
 
 def candidato_gemini():
@@ -183,9 +189,21 @@ def pensar(msgs):
 def atender(texto, chat):
     hist = HISTORIAL.setdefault(chat, [])
     hist.append({"role": "user", "content": texto})
-    msgs = [{"role": "system", "content": SYSTEM_PROMPT}] + hist[-20:]
+    base = [{"role": "system", "content": SYSTEM_PROMPT}] + hist[-12:]
+    msgs = []
+    for m in base:
+        if m["role"] == "tool" and len(m.get("content", "")) > 2000:
+            m = dict(m)
+            m["content"] = m["content"][:2000] + "\n...[truncado]"
+        msgs.append(m)
     for _ in range(12):
-        m = pensar(msgs)
+        try:
+            m = pensar(msgs)
+        except Exception as e:
+            if "413" in str(e) and len(msgs) > 4:
+                msgs = [msgs[0]] + msgs[-4:]
+                continue
+            raise
         if m.get("tool_calls"):
             msgs.append(m)
             for tc in m["tool_calls"]:
@@ -199,6 +217,8 @@ def atender(texto, chat):
                     salida = registrar_propuesta(args)
                 else:
                     salida = "herramienta desconocida"
+                if len(salida) > 2000:
+                    salida = salida[:2000] + "\n...[truncado]"
                 msgs.append({"role": "tool", "tool_call_id": tc["id"], "content": salida})
         else:
             r = m.get("content") or "(sin respuesta)"
