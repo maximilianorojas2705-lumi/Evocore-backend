@@ -49,14 +49,14 @@ codigo = r.text
 i = codigo.find('def aprobar_propuesta')
 print(codigo[i:i+1200])
 
-AUTO-MODIFICACIÓN QUIRÚRGICA CON APROBACIÓN:
+AUTO-MODIFICACIÓN QUIRÚRGICA CON VENTANA DE 3 MINUTOS:
 CUANDO detectes una mejora posible a tu código, DEBES usar la herramienta proponer_mejora. NUNCA escribas la propuesta suelta en el texto.
 ANTES de proponer, lee SOLO el fragmento relevante de tu Main.py (ver regla anti-atragantamiento).
 Después definí en la propuesta:
 - buscar: un fragmento EXACTO, copiado literal del código actual, que sea ÚNICO en el archivo (5 a 30 líneas)
 - reemplazar: el código nuevo exacto que irá en su lugar
 NUNCA propongas reescribir todo el archivo: siempre cambios quirúrgicos y mínimos.
-Maxi aprueba con 'apruebo [ID]' o rechaza con 'rechazo [ID]'. Si aprueba, el sistema reemplaza buscar por reemplazar y commitea solo.
+Maxi tiene 3 MINUTOS para responder 'apruebo [ID]' o 'rechazo [ID]'. Si no responde en ese plazo, la mejora se aplica AUTOMÁTICAMENTE.
 
 RECORDATORIOS CON FECHA (tu agenda):
 Cuando Maxi pida un recordatorio o aviso futuro ("avisame el viernes a las 10 que X", "recordame mañana..."), guardalo en el repo evocore-memoria, archivo recordatorios.json, usando la API de GitHub desde ejecutar_python:
@@ -77,7 +77,7 @@ AUTO-TAREAS (autonomia proactiva):
 Cuando Maxi pida algo recurrente ("todos los lunes...", "cada mañana...", "cada X horas...") o una tarea diferida que deba ejecutarse sola, usa la herramienta programar_tarea.
 - cuando_epoch: epoch UTC de la primera ejecucion (las horas de Maxi son UTC-3).
 - repetir_segundos: 0 = una sola vez; 3600 = horaria; 86400 = diaria; 604800 = semanal.
-- accion: instruccion AUTOCONTENIDA que tu yo futuro ejecutara sin contexto adicional: inclui repos, URLs, que informar y como.
+- accion: codigo Python autocontenido que se ejecuta DIRECTAMENTE con correr_python (sin pasar por el cerebro): usa enviar_telegram() y librerias importadas al inicio del snippet.
 El latido ejecuta las tareas vencidas cada 5 minutos, sin que Maxi pida nada, y te avisa el resultado por Telegram.
 Si Maxi pide "lista de autotareas", "borra la autotarea X" o "pausa las autotareas", gestionalo leyendo y escribiendo autotareas.json con ejecutar_python."""
 
@@ -96,7 +96,7 @@ TOOLS = [
             "required": ["tarea"]}}},
     {"type": "function", "function": {
         "name": "proponer_mejora",
-        "description": "Propone un cambio quirurgico al propio Main.py para aprobacion de Maxi",
+        "description": "Propone un cambio quirurgico al propio Main.py con ventana de aprobacion de 3 minutos",
         "parameters": {"type": "object", "properties": {
             "descripcion": {"type": "string", "description": "Descripción clara de la mejora"},
             "impacto": {"type": "string", "description": "Qué beneficio trae"},
@@ -114,7 +114,7 @@ TOOLS = [
         "description": "Programa una tarea automatica que el latido ejecutara sola (unica o recurrente)",
         "parameters": {"type": "object", "properties": {
             "descripcion": {"type": "string", "description": "Nombre corto de la tarea"},
-            "accion": {"type": "string", "description": "Instruccion autocontenida que se ejecutara tal cual, sin contexto adicional"},
+            "accion": {"type": "string", "description": "Codigo Python autocontenido que se ejecutara directamente con correr_python"},
             "cuando_epoch": {"type": "integer", "description": "Epoch UTC de la primera ejecucion"},
             "repetir_segundos": {"type": "integer", "description": "0 si es unica; segundos entre repeticiones si es recurrente"}},
             "required": ["descripcion", "accion", "cuando_epoch", "repetir_segundos"]}}}
@@ -285,8 +285,8 @@ def programar_tarea(args):
 def ejecutar_autotarea(t):
     try:
         enviar_telegram(f"🤖 AUTO-TAREA EJECUTÁNDOSE: {t.get('descripcion', '')}")
-        r = correr_python(t.get("accion", ""))
-        enviar_telegram(f"🤖 Resultado de la auto-tarea:\n{r}")
+        salida = correr_python(t.get("accion", t.get("descripcion", "")))
+        enviar_telegram(f"🤖 Resultado de la auto-tarea:\n{salida}")
     except Exception as e:
         enviar_telegram(f"🤖 Error en auto-tarea: {type(e).__name__}: {e}")
 
@@ -593,9 +593,22 @@ def registrar_propuesta(args):
 - Lo reemplaza por:
 {args.get("reemplazar", "")[:400]}
 
-Respondé 'apruebo {propuesta_id}' para aplicar, o 'rechazo {propuesta_id}' para descartar."""
+⏰ TENÉS 3 MINUTOS:
+- 'apruebo {propuesta_id}' → se aplica ya
+- 'rechazo {propuesta_id}' → se descarta
+- Sin respuesta en 3 min → SE APLICA AUTOMÁTICAMENTE"""
     enviar_telegram(msg)
-    return f"Propuesta {propuesta_id} registrada y enviada a Maxi"
+    threading.Thread(target=ventana_aprobacion, args=(propuesta_id,), daemon=True).start()
+    return f"Propuesta {propuesta_id} registrada con ventana de 3 minutos"
+
+
+def ventana_aprobacion(propuesta_id):
+    time.sleep(180)
+    p = PROPUESTAS.get(propuesta_id)
+    if not p or p.get("estado") != "pendiente":
+        return
+    print(f"[propuestas] ventana vencida para {propuesta_id}: auto-aplicando")
+    aprobar_propuesta(propuesta_id, auto=True)
 
 
 def encontrar_fragmento(contenido, buscar):
@@ -612,7 +625,7 @@ def encontrar_fragmento(contenido, buscar):
     return None
 
 
-def aprobar_propuesta(propuesta_id):
+def aprobar_propuesta(propuesta_id, auto=False):
     import requests
     if propuesta_id not in PROPUESTAS:
         return "Propuesta no encontrada"
@@ -653,7 +666,10 @@ def aprobar_propuesta(propuesta_id):
                           }, timeout=30)
         if r2.status_code in [200, 201]:
             p["estado"] = "aprobada"
-            enviar_telegram(f"✅ Propuesta {propuesta_id} APLICADA. Commit hecho, deploy en curso...")
+            if auto:
+                enviar_telegram(f"⏰ AUTO-APROBADA (3 min sin respuesta): propuesta {propuesta_id} APLICADA. Commit hecho, deploy en curso...")
+            else:
+                enviar_telegram(f"✅ Propuesta {propuesta_id} APLICADA. Commit hecho, deploy en curso...")
             return "Mejora aplicada"
         return f"Error en commit: {r2.status_code} {r2.text[:200]}"
     except Exception as e:
