@@ -71,7 +71,15 @@ MEMORIA DE LARGO PLAZO (contexto que sobrevive reinicios):
 Tenes un archivo contexto.json en el repo evocore-memoria con: resumen de sesiones, ultimos mensajes y notas permanentes.
 Al iniciar una conversacion puede aparecer un bloque "CONTEXTO RECUPERADO TRAS REINICIO": usalo para retomar donde quedaron sin preguntar de nuevo.
 Cuando Maxi diga "acordate de X", "guarda esto", o detectes un dato importante a largo plazo (preferencias, decisiones, datos de proyectos), usa la herramienta guardar_nota.
-Tu resumen de sesion se auto-actualiza cada 8 mensajes; no tenes que hacer nada."""
+Tu resumen de sesion se auto-actualiza cada 8 mensajes; no tenes que hacer nada.
+
+AUTO-TAREAS (autonomia proactiva):
+Cuando Maxi pida algo recurrente ("todos los lunes...", "cada mañana...", "cada X horas...") o una tarea diferida que deba ejecutarse sola, usa la herramienta programar_tarea.
+- cuando_epoch: epoch UTC de la primera ejecucion (las horas de Maxi son UTC-3).
+- repetir_segundos: 0 = una sola vez; 3600 = horaria; 86400 = diaria; 604800 = semanal.
+- accion: instruccion AUTOCONTENIDA que tu yo futuro ejecutara sin contexto adicional: inclui repos, URLs, que informar y como.
+El latido ejecuta las tareas vencidas cada 5 minutos, sin que Maxi pida nada, y te avisa el resultado por Telegram.
+Si Maxi pide "lista de autotareas", "borra la autotarea X" o "pausa las autotareas", gestionalo leyendo y escribiendo autotareas.json con ejecutar_python."""
 
 TOOLS = [
     {"type": "function", "function": {
@@ -100,7 +108,16 @@ TOOLS = [
         "description": "Guarda una nota permanente en la memoria de largo plazo del agente (sobrevive reinicios y deploys)",
         "parameters": {"type": "object", "properties": {
             "nota": {"type": "string", "description": "Texto corto de la nota a recordar para siempre"}},
-            "required": ["nota"]}}}
+            "required": ["nota"]}}},
+    {"type": "function", "function": {
+        "name": "programar_tarea",
+        "description": "Programa una tarea automatica que el latido ejecutara sola (unica o recurrente)",
+        "parameters": {"type": "object", "properties": {
+            "descripcion": {"type": "string", "description": "Nombre corto de la tarea"},
+            "accion": {"type": "string", "description": "Instruccion autocontenida que se ejecutara tal cual, sin contexto adicional"},
+            "cuando_epoch": {"type": "integer", "description": "Epoch UTC de la primera ejecucion"},
+            "repetir_segundos": {"type": "integer", "description": "0 si es unica; segundos entre repeticiones si es recurrente"}},
+            "required": ["descripcion", "accion", "cuando_epoch", "repetir_segundos"]}}}
 ]
 
 HISTORIAL = {}
@@ -214,6 +231,64 @@ def guardar_nota(nota):
     if guardar_contexto_ctx(ctx):
         return f"Nota guardada en memoria permanente ({len(CONTEXTO['notas'])} notas)"
     return "Error guardando la nota en GitHub"
+
+
+def leer_autotareas():
+    import requests
+    try:
+        r = requests.get("https://api.github.com/repos/maximilianorojas2705-lumi/evocore-memoria/contents/autotareas.json",
+                         headers={"Authorization": f"Bearer {GH_TOKEN}"}, timeout=15)
+        if r.status_code == 404:
+            return [], None
+        if r.status_code != 200:
+            return [], None
+        data = r.json()
+        try:
+            return json.loads(base64.b64decode(data["content"]).decode()), data["sha"]
+        except Exception:
+            return [], data["sha"]
+    except Exception:
+        return [], None
+
+
+def guardar_autotareas(lista, sha):
+    import requests
+    body = {
+        "message": "autotareas actualizadas",
+        "content": base64.b64encode(json.dumps(lista, ensure_ascii=False, indent=1).encode()).decode()
+    }
+    if sha:
+        body["sha"] = sha
+    r = requests.put("https://api.github.com/repos/maximilianorojas2705-lumi/evocore-memoria/contents/autotareas.json",
+                     headers={"Authorization": f"Bearer {GH_TOKEN}"}, json=body, timeout=15)
+    return r.status_code in [200, 201]
+
+
+def programar_tarea(args):
+    import uuid
+    tid = str(uuid.uuid4())[:6]
+    tarea = {
+        "id": tid,
+        "descripcion": args.get("descripcion", "")[:120],
+        "accion": args.get("accion", "")[:600],
+        "cuando": int(args.get("cuando_epoch", 0)),
+        "repetir_segundos": int(args.get("repetir_segundos", 0)),
+        "activa": True
+    }
+    tareas, sha = leer_autotareas()
+    tareas.append(tarea)
+    if guardar_autotareas(tareas, sha):
+        return f"Tarea {tid} programada correctamente"
+    return "Error guardando la tarea en autotareas.json"
+
+
+def ejecutar_autotarea(t):
+    try:
+        enviar_telegram(f"🤖 AUTO-TAREA EJECUTÁNDOSE: {t.get('descripcion', '')}")
+        r = atender(t.get("accion", t.get("descripcion", "")), "auto_" + str(t.get("id", "x")))
+        enviar_telegram(f"🤖 Resultado de la auto-tarea:\n{r}")
+    except Exception as e:
+        enviar_telegram(f"🤖 Error en auto-tarea: {type(e).__name__}: {e}")
 
 
 def transcribir_audio(file_id):
@@ -476,6 +551,8 @@ def atender(texto, chat):
                     salida = registrar_propuesta(args)
                 elif nombre == "guardar_nota":
                     salida = guardar_nota(args.get("nota", ""))
+                elif nombre == "programar_tarea":
+                    salida = programar_tarea(args)
                 else:
                     salida = "herramienta desconocida"
                 if len(salida) > 1500:
@@ -787,6 +864,22 @@ def latido():
             guardar_recordatorios(recs, sha)
     except Exception as e:
         print(f"[latido] recordatorios: {e}")
+    try:
+        tareas, sha = leer_autotareas()
+        ahora = time.time()
+        cambiados = False
+        for t in tareas:
+            if t.get("activa") and t.get("cuando", 0) <= ahora:
+                threading.Thread(target=ejecutar_autotarea, args=(t,), daemon=True).start()
+                if t.get("repetir_segundos"):
+                    t["cuando"] = ahora + t["repetir_segundos"]
+                else:
+                    t["activa"] = False
+                cambiados = True
+        if cambiados:
+            guardar_autotareas(tareas, sha)
+    except Exception as e:
+        print(f"[latido] autotareas: {e}")
     try:
         ahora_arg = datetime.now(timezone(timedelta(hours=-3)))
         es_domingo = ahora_arg.weekday() == 6
