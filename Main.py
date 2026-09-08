@@ -105,6 +105,28 @@ def enviar_telegram(msg, chat=None):
             pass
 
 
+def transcribir_audio(file_id):
+    import requests
+    try:
+        r = requests.get(f"https://api.telegram.org/bot{TG_BOT}/getFile",
+                         params={"file_id": file_id}, timeout=15)
+        if r.status_code != 200:
+            return f"[Error descargando audio: {r.status_code}]"
+        file_path = r.json()["result"]["file_path"]
+        url = f"https://api.telegram.org/file/bot{TG_BOT}/{file_path}"
+        audio = requests.get(url, timeout=30).content
+        files = {"file": ("audio.ogg", audio, "audio/ogg")}
+        data = {"model": "whisper-large-v3", "language": "es"}
+        headers = {"Authorization": f"Bearer {GROQ_KEY}"}
+        r2 = requests.post("https://api.groq.com/openai/v1/audio/transcriptions",
+                           headers=headers, files=files, data=data, timeout=60)
+        if r2.status_code != 200:
+            return f"[Error transcribiendo: {r2.status_code}]"
+        return r2.json().get("text", "")
+    except Exception as e:
+        return f"[Error en transcripción: {type(e).__name__}]"
+
+
 def correr_python(codigo):
     buf = io.StringIO()
     error = None
@@ -507,7 +529,22 @@ async def tg(req: Request):
     data = await req.json()
     msg = data.get("message") or {}
     texto = msg.get("text")
+    voice = msg.get("voice")
+    audio = msg.get("audio")
     chat = str(msg.get("chat", {}).get("id", ""))
+    
+    if voice or audio:
+        file_id = (voice or audio).get("file_id")
+        if file_id and chat:
+            def procesar_audio():
+                transcrito = transcribir_audio(file_id)
+                if transcrito.startswith("["):
+                    enviar_telegram(transcrito, chat)
+                else:
+                    enviar_telegram(f"🎤 Escuché: {transcrito}", chat)
+                    procesar(transcrito, chat)
+            threading.Thread(target=procesar_audio, daemon=True).start()
+    
     if texto and chat:
         threading.Thread(target=procesar, args=(texto, chat), daemon=True).start()
     return {"ok": True}
