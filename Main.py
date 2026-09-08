@@ -22,8 +22,12 @@ Datos de Maxi: GitHub maximilianorojas2705-lumi, repos Earnfi y nexus-backend, p
 Estilo: directo, sin sermones. Usa emojis ok/atencion/critico.
 Despues de cada tarea agrega mini ciclo evolutivo: que hiciste, que salio mal, que aprendiste.
 
-TENES UN OBRERO EXTERNO (herramienta delegar_a_obrero):
-- 'gemini': Gemini Flash. Uso: documentos largos, resumenes masivos, velocidad.
+OBREROS ESPECIALISTAS (herramienta delegar_a_obrero con parametro perfil):
+- 'reviewer': revisor de codigo senior estricto, cazador de bugs y riesgos. Usalo para analizar codigo, diffs y seguridad.
+- 'investigador': creativo para brainstorm, diseños y alternativas no obvias.
+- 'resumidor': sintetizador extremo en bullets densos. Usalo para comprimir textos largos.
+- 'generico': el de siempre para todo lo demas.
+Elegi el perfil segun la tarea; si Maxi pide explicitamente un especialista, usalo.
 Delegá cuando: la tarea sea pesada o larga, o necesites procesamiento masivo de texto.
 Vos sos el JEFE: integra lo que devuelve el obrero con tu criterio, no lo copies a ciegas.
 
@@ -90,9 +94,10 @@ TOOLS = [
             "required": ["codigo"]}}},
     {"type": "function", "function": {
         "name": "delegar_a_obrero",
-        "description": "Delega una tarea al obrero Gemini y devuelve su respuesta textual",
+        "description": "Delega una tarea a un obrero Gemini especialista y devuelve su respuesta textual",
         "parameters": {"type": "object", "properties": {
-            "tarea": {"type": "string", "description": "Instrucciones completas y autocontenidas para el obrero"}},
+            "tarea": {"type": "string", "description": "Instrucciones completas y autocontenidas para el obrero"},
+            "perfil": {"type": "string", "enum": ["generico", "reviewer", "investigador", "resumidor"], "description": "Especialista: reviewer (codigo estricto), investigador (ideas creativas), resumidor (sintesis), generico (resto)"}},
             "required": ["tarea"]}}},
     {"type": "function", "function": {
         "name": "proponer_mejora",
@@ -124,6 +129,25 @@ HISTORIAL = {}
 STATE = {"last_btc": None, "last_commits": {}, "last_report": None, "turnos": 0}
 MODELOS_CACHE = {}
 PROPUESTAS = {}
+
+PERFILES = {
+    "reviewer": {
+        "system": "Sos un revisor de codigo senior extremadamente estricto y preciso. Tu trabajo es cazar bugs, riesgos de seguridad, errores de logica y problemas de rendimiento. No elogies por elogiar: si algo esta bien, decilo en una linea; concentra tu energia en lo que puede romperse. Se tecnico, directo y concreto.",
+        "temperature": 0.2
+    },
+    "investigador": {
+        "system": "Sos un investigador creativo y curioso. Generas alternativas, ideas no obvias y enfoques novedosos. Exploras angulos que otros no ven, comparas opciones con honestidad intelectual y marcas claramente cuales son especulaciones.",
+        "temperature": 0.8
+    },
+    "resumidor": {
+        "system": "Sos un sintetizador profesional. Comprimis cualquier contenido en bullets cortos y densos, sin perder decisiones, pendientes ni datos clave. Nunca agregas informacion que no estaba en el original.",
+        "temperature": 0.3
+    },
+    "generico": {
+        "system": "",
+        "temperature": 0.4
+    }
+}
 
 
 def enviar_telegram(msg, chat=None):
@@ -194,7 +218,7 @@ def resumir_historial(hist):
     tarea = ("Resumi esta conversacion en maximo 150 palabras, en espanol, enfocandote en: "
              "decisiones tomadas, tareas pendientes, datos importantes y aprendizajes. "
              "Devolve SOLO el resumen.\n\n" + "\n".join(lineas))
-    r = llamar_obrero(tarea)
+    r = llamar_obrero(tarea, "resumidor")
     if r.startswith("obrero"):
         return None
     return r
@@ -416,14 +440,19 @@ def candidato_gemini():
     return modelos_validos[0]
 
 
-def llamar_obrero(tarea):
+def llamar_obrero(tarea, perfil="generico"):
     import requests
+    p = PERFILES.get(perfil, PERFILES["generico"])
     modelos = ["gemini-3-flash-preview", "gemini-3.1-flash-lite-preview", "gemini-flash-lite-latest"]
     for modelo in modelos:
         try:
+            payload = {"contents": [{"parts": [{"text": tarea}]}],
+                       "generationConfig": {"temperature": p["temperature"]}}
+            if p["system"]:
+                payload["system_instruction"] = {"parts": [{"text": p["system"]}]}
             r = requests.post(
                 f"https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generateContent?key={GEMINI_KEY}",
-                json={"contents": [{"parts": [{"text": tarea}]}]}, timeout=90)
+                json=payload, timeout=90)
             if r.status_code == 200:
                 data = r.json()
                 if "candidates" in data and len(data["candidates"]) > 0:
@@ -546,7 +575,7 @@ def atender(texto, chat):
                 if nombre == "ejecutar_python":
                     salida = correr_python(args.get("codigo", ""))
                 elif nombre == "delegar_a_obrero":
-                    salida = llamar_obrero(args.get("tarea", ""))
+                    salida = llamar_obrero(args.get("tarea", ""), args.get("perfil", "generico"))
                 elif nombre == "proponer_mejora":
                     salida = registrar_propuesta(args)
                 elif nombre == "guardar_nota":
@@ -759,7 +788,7 @@ Dame:
 4. 🐛 Posibles bugs (si ves alguno)
 
 Sé directo y técnico. Máximo 200 palabras."""
-        analisis = llamar_obrero(tarea)
+        analisis = llamar_obrero(tarea, "reviewer")
         if "fallo" in analisis[:30]:
             nombres = ", ".join(a["filename"] for a in archivos[:5])
             analisis = f"📝 Commit: {mensaje}\n📄 Archivos: {nombres}\n(El obrero no estaba disponible; revisión profunda pendiente)"
