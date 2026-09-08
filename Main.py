@@ -285,7 +285,7 @@ def programar_tarea(args):
 def ejecutar_autotarea(t):
     try:
         enviar_telegram(f"🤖 AUTO-TAREA EJECUTÁNDOSE: {t.get('descripcion', '')}")
-        r = atender(t.get("accion", t.get("descripcion", "")), "auto_" + str(t.get("id", "x")))
+        r = correr_python(t.get("accion", ""))
         enviar_telegram(f"🤖 Resultado de la auto-tarea:\n{r}")
     except Exception as e:
         enviar_telegram(f"🤖 Error en auto-tarea: {type(e).__name__}: {e}")
