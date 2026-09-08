@@ -910,7 +910,7 @@ def latido():
 @app.api_route("/", methods=["GET", "HEAD"])
 def salud():
     latido()
-    return {"status": "ok", "servicio": "Backend EvoCore v2"}
+    return {"status": "ok", "servicio": "Backend EvoCore"}
 
 
 @app.post("/ejecutar")
