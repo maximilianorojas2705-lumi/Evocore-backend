@@ -1,5 +1,6 @@
 from fastapi import FastAPI, Request
 import subprocess, sys, io, contextlib, os, json, threading, time, base64
+from datetime import datetime, timezone, timedelta
 
 app = FastAPI()
 TOKEN = "evo2026"
@@ -89,7 +90,7 @@ TOOLS = [
 ]
 
 HISTORIAL = {}
-STATE = {"last_btc": None, "last_commits": {}}
+STATE = {"last_btc": None, "last_commits": {}, "last_report": None}
 MODELOS_CACHE = {"groq": None, "gemini": None}
 PROPUESTAS = {}
 
@@ -550,6 +551,59 @@ async def tg(req: Request):
     return {"ok": True}
 
 
+def generar_reporte_semanal():
+    import requests
+    try:
+        ahora = datetime.now(timezone.utc)
+        hace_7_dias = ahora - timedelta(days=7)
+        
+        reporte = f"📊 REPORTE SEMANAL ({ahora.strftime('%d/%m/%Y')})\n\n"
+        
+        # Commits de la semana
+        reporte += "🔍 Revisión de código:\n"
+        repos = ["maximilianorojas2705-lumi/Earnfi", "maximilianorojas2705-lumi/nexus-backend"]
+        for repo in repos:
+            r = requests.get(f'https://api.github.com/repos/{repo}/commits',
+                           headers={"Authorization": f"Bearer {GH_TOKEN}"},
+                           params={"since": hace_7_dias.isoformat()},
+                           timeout=15)
+            if r.status_code == 200:
+                commits = r.json()
+                reporte += f"- {repo.split('/')[-1]}: {len(commits)} commits\n"
+        
+        # Bitcoin
+        reporte += "\n💰 Bitcoin:\n"
+        try:
+            r = requests.get('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd', timeout=15).json()
+            precio = r['bitcoin']['usd']
+            reporte += f"- Precio actual: ${precio:,.0f}\n"
+        except:
+            reporte += "- Error consultando precio\n"
+        
+        # Recordatorios
+        reporte += "\n⏰ Recordatorios:\n"
+        recs, _ = leer_recordatorios()
+        total = len(recs)
+        enviados = sum(1 for r in recs if r.get("enviado"))
+        reporte += f"- Total: {total}, Disparados: {enviados}\n"
+        
+        # Herramientas
+        reporte += "\n🛠️ Herramientas creadas:\n"
+        try:
+            r = requests.get('https://api.github.com/repos/maximilianorojas2705-lumi/evocore-herramientas/contents/tools',
+                           headers={"Authorization": f"Bearer {GH_TOKEN}"}, timeout=15)
+            if r.status_code == 200:
+                tools = [f['name'].replace('.py', '') for f in r.json() if f['name'].endswith('.py')]
+                reporte += f"- {', '.join(tools) if tools else 'Ninguna'}\n"
+        except:
+            reporte += "- Error consultando herramientas\n"
+        
+        reporte += "\n✨ Agente operativo y evolucionando."
+        enviar_telegram(reporte)
+    except Exception as e:
+        print(f"[reporte] error: {e}")
+
+
 def latido():
     import requests
     try:
@@ -591,6 +645,17 @@ def latido():
             guardar_recordatorios(recs, sha)
     except Exception as e:
         print(f"[latido] recordatorios: {e}")
+    
+    # Reporte semanal (domingos 20:00 hora argentina = 23:00 UTC)
+    try:
+        ahora_arg = datetime.now(timezone(timedelta(hours=-3)))
+        es_domingo = ahora_arg.weekday() == 6
+        es_hora = ahora_arg.hour == 20 and ahora_arg.minute < 10
+        if es_domingo and es_hora and STATE["last_report"] != ahora_arg.strftime("%Y-%m-%d"):
+            generar_reporte_semanal()
+            STATE["last_report"] = ahora_arg.strftime("%Y-%m-%d")
+    except Exception as e:
+        print(f"[latido] reporte semanal: {e}")
 
 
 @app.api_route("/", methods=["GET", "HEAD"])
