@@ -10,6 +10,8 @@ TG_CHAT = os.environ.get("TG_CHAT", "")
 GROQ_KEY = os.environ.get("GROQ_KEY", "")
 GEMINI_KEY = os.environ.get("GEMINI_KEY", "")
 GH_TOKEN = os.environ.get("GH_TOKEN", "")
+CEREBRAS_KEY = os.environ.get("CEREBRAS_KEY", "")
+OPENROUTER_KEY = os.environ.get("OPENROUTER_KEY", "")
 
 SYSTEM_PROMPT = """Sos EvoCore, el agente evolutivo personal de Maxi, con autonomia tecnica maxima.
 Trabajas 100% en la nube desde tu propio servidor. NUNCA des comandos para ejecutar en local (git, pip, terminal).
@@ -91,7 +93,7 @@ TOOLS = [
 
 HISTORIAL = {}
 STATE = {"last_btc": None, "last_commits": {}, "last_report": None}
-MODELOS_CACHE = {"groq": None, "gemini": None}
+MODELOS_CACHE = {}
 PROPUESTAS = {}
 
 
@@ -142,38 +144,93 @@ def correr_python(codigo):
     return (salida or "(sin salida)")[-3000:]
 
 
+def listar_modelos(prov):
+    import requests
+    if MODELOS_CACHE.get(prov):
+        return MODELOS_CACHE[prov]
+    try:
+        if prov == "groq":
+            r = requests.get("https://api.groq.com/openai/v1/models",
+                             headers={"Authorization": f"Bearer {GROQ_KEY}"}, timeout=20)
+            prefs = ["gpt-oss-120b", "gpt-oss-20b", "maverick", "llama-3.3", "qwen", "deepseek"]
+        elif prov == "cerebras":
+            r = requests.get("https://api.cerebras.ai/v1/models",
+                             headers={"Authorization": f"Bearer {CEREBRAS_KEY}"}, timeout=20)
+            prefs = ["llama-3.3-70b", "qwen-3-32b", "llama3.1-8b"]
+        elif prov == "openrouter":
+            r = requests.get("https://openrouter.ai/api/v1/models", timeout=20)
+            prefs = ["llama-3.3-70b-instruct:free", "qwen3-32b:free", "deepseek-chat:free", "mistral"]
+        else:
+            return []
+        if r.status_code != 200:
+            return []
+        ids = [m["id"] for m in r.json().get("data", [])]
+        if prov == "openrouter":
+            ids = [i for i in ids if i.endswith(":free")]
+        out = []
+        for p in prefs:
+            for i in ids:
+                if p in i.lower() and i not in out:
+                    out.append(i)
+        for i in ids:
+            if i not in out:
+                out.append(i)
+        MODELOS_CACHE[prov] = out
+        return out
+    except Exception:
+        return []
+
+
+def llamar_openai(prov, modelo, msgs):
+    import requests
+    if prov == "groq":
+        url = "https://api.groq.com/openai/v1/chat/completions"
+        headers = {"Authorization": f"Bearer {GROQ_KEY}"}
+    elif prov == "cerebras":
+        url = "https://api.cerebras.ai/v1/chat/completions"
+        headers = {"Authorization": f"Bearer {CEREBRAS_KEY}"}
+    else:
+        url = "https://openrouter.ai/api/v1/chat/completions"
+        headers = {"Authorization": f"Bearer {OPENROUTER_KEY}",
+                   "HTTP-Referer": "https://evocore-backend-fjnp.onrender.com",
+                   "X-Title": "EvoCore"}
+    payload = {"model": modelo, "messages": msgs, "tools": TOOLS, "temperature": 0.4}
+    r = requests.post(url, headers=headers, json=payload, timeout=120)
+    data = r.json()
+    if "choices" in data:
+        return data["choices"][0]["message"]
+    raise Exception(f"{prov}/{modelo}: {r.status_code} {r.text[:120]}")
+
+
+def pensar_multi(msgs):
+    ultimo = ""
+    for prov in ["groq", "cerebras", "openrouter"]:
+        if prov == "cerebras" and not CEREBRAS_KEY:
+            continue
+        if prov == "openrouter" and not OPENROUTER_KEY:
+            continue
+        for modelo in listar_modelos(prov)[:3]:
+            for intento in range(2):
+                try:
+                    return llamar_openai(prov, modelo, msgs)
+                except Exception as e:
+                    ultimo = str(e)
+                    if "429" in ultimo:
+                        time.sleep(10)
+                        continue
+                    break
+    raise Exception(f"Todos los cerebros OpenAI-compatibles fallaron -> {ultimo}")
+
+
 def candidato_gemini():
     modelos_validos = [
         "gemini-3-flash-preview",
         "gemini-3.1-flash-lite-preview",
         "gemini-flash-lite-latest"
     ]
-    if MODELOS_CACHE["gemini"] and MODELOS_CACHE["gemini"] in modelos_validos:
+    if MODELOS_CACHE.get("gemini") in modelos_validos:
         return MODELOS_CACHE["gemini"]
-    MODELOS_CACHE["gemini"] = modelos_validos[0]
     return modelos_validos[0]
-
-
-def candidatos_groq():
-    import requests
-    if MODELOS_CACHE["groq"]:
-        return MODELOS_CACHE["groq"]
-    r = requests.get("https://api.groq.com/openai/v1/models",
-                     headers={"Authorization": f"Bearer {GROQ_KEY}"}, timeout=30)
-    ids = [m["id"] for m in r.json().get("data", [])]
-    prefs = ["gpt-oss-120b", "gpt-oss-20b", "maverick", "llama-3.3", "qwen", "deepseek", "llama"]
-    out = []
-    for p in prefs:
-        for i in ids:
-            if p in i.lower() and i not in out:
-                out.append(i)
-    for i in ids:
-        if i not in out:
-            out.append(i)
-    if not out:
-        raise Exception(f"Groq sin modelos: {r.status_code}")
-    MODELOS_CACHE["groq"] = out
-    return out
 
 
 def llamar_obrero(tarea):
@@ -235,29 +292,6 @@ def convertir_a_gemini(msgs):
     return contents
 
 
-def pensar_groq(msgs):
-    import requests
-    ultimo = ""
-    for modelo in candidatos_groq()[:4]:
-        for intento in range(2):
-            payload = {"model": modelo, "messages": msgs,
-                       "tools": TOOLS, "temperature": 0.4}
-            if intento > 0:
-                payload["max_tokens"] = 1000
-            r = requests.post("https://api.groq.com/openai/v1/chat/completions",
-                              headers={"Authorization": f"Bearer {GROQ_KEY}"},
-                              json=payload, timeout=120)
-            data = r.json()
-            if "choices" in data:
-                return data["choices"][0]["message"]
-            ultimo = f"{modelo}: {r.status_code} {r.text[:150]}"
-            if r.status_code == 429:
-                time.sleep(20)
-                continue
-            break
-    raise Exception(f"Groq fallo -> {ultimo}")
-
-
 def pensar_gemini(msgs):
     import requests
     modelo = candidato_gemini()
@@ -292,9 +326,9 @@ def pensar_gemini(msgs):
 
 def pensar(msgs):
     try:
-        return pensar_groq(msgs)
+        return pensar_multi(msgs)
     except Exception as e:
-        print(f"[cerebro] groq no disponible, conmutando a gemini: {e}")
+        print(f"[cerebro] cadena openai agotada, conmutando a gemini: {e}")
     return pensar_gemini(msgs)
 
 
@@ -556,10 +590,7 @@ def generar_reporte_semanal():
     try:
         ahora = datetime.now(timezone.utc)
         hace_7_dias = ahora - timedelta(days=7)
-        
         reporte = f"📊 REPORTE SEMANAL ({ahora.strftime('%d/%m/%Y')})\n\n"
-        
-        # Commits de la semana
         reporte += "🔍 Revisión de código:\n"
         repos = ["maximilianorojas2705-lumi/Earnfi", "maximilianorojas2705-lumi/nexus-backend"]
         for repo in repos:
@@ -570,24 +601,18 @@ def generar_reporte_semanal():
             if r.status_code == 200:
                 commits = r.json()
                 reporte += f"- {repo.split('/')[-1]}: {len(commits)} commits\n"
-        
-        # Bitcoin
         reporte += "\n💰 Bitcoin:\n"
         try:
             r = requests.get('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd', timeout=15).json()
             precio = r['bitcoin']['usd']
             reporte += f"- Precio actual: ${precio:,.0f}\n"
-        except:
+        except Exception:
             reporte += "- Error consultando precio\n"
-        
-        # Recordatorios
         reporte += "\n⏰ Recordatorios:\n"
         recs, _ = leer_recordatorios()
         total = len(recs)
         enviados = sum(1 for r in recs if r.get("enviado"))
         reporte += f"- Total: {total}, Disparados: {enviados}\n"
-        
-        # Herramientas
         reporte += "\n🛠️ Herramientas creadas:\n"
         try:
             r = requests.get('https://api.github.com/repos/maximilianorojas2705-lumi/evocore-herramientas/contents/tools',
@@ -595,9 +620,8 @@ def generar_reporte_semanal():
             if r.status_code == 200:
                 tools = [f['name'].replace('.py', '') for f in r.json() if f['name'].endswith('.py')]
                 reporte += f"- {', '.join(tools) if tools else 'Ninguna'}\n"
-        except:
+        except Exception:
             reporte += "- Error consultando herramientas\n"
-        
         reporte += "\n✨ Agente operativo y evolucionando."
         enviar_telegram(reporte)
     except Exception as e:
@@ -645,8 +669,6 @@ def latido():
             guardar_recordatorios(recs, sha)
     except Exception as e:
         print(f"[latido] recordatorios: {e}")
-    
-    # Reporte semanal (domingos 20:00 hora argentina = 23:00 UTC)
     try:
         ahora_arg = datetime.now(timezone(timedelta(hours=-3)))
         es_domingo = ahora_arg.weekday() == 6
