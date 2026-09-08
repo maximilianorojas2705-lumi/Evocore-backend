@@ -65,7 +65,13 @@ Cuando Maxi pida un recordatorio o aviso futuro ("avisame el viernes a las 10 qu
 - Primero imprimí la fecha actual del servidor para resolver dias relativos ("mañana", "el viernes").
 - Lee recordatorios.json (si da 404, empezá con lista vacia), agregá el item y guardalo con PUT (con sha si existe).
 - Confirmale a Maxi exactamente qué entendiste: texto + fecha y hora.
-El latido revisa recordatorios.json cada 5 minutos y envia el aviso por Telegram cuando llega la hora, marcandolo como enviado."""
+El latido revisa recordatorios.json cada 5 minutos y envia el aviso por Telegram cuando llega la hora, marcandolo como enviado.
+
+MEMORIA DE LARGO PLAZO (contexto que sobrevive reinicios):
+Tenes un archivo contexto.json en el repo evocore-memoria con: resumen de sesiones, ultimos mensajes y notas permanentes.
+Al iniciar una conversacion puede aparecer un bloque "CONTEXTO RECUPERADO TRAS REINICIO": usalo para retomar donde quedaron sin preguntar de nuevo.
+Cuando Maxi diga "acordate de X", "guarda esto", o detectes un dato importante a largo plazo (preferencias, decisiones, datos de proyectos), usa la herramienta guardar_nota.
+Tu resumen de sesion se auto-actualiza cada 8 mensajes; no tenes que hacer nada."""
 
 TOOLS = [
     {"type": "function", "function": {
@@ -88,11 +94,17 @@ TOOLS = [
             "impacto": {"type": "string", "description": "Qué beneficio trae"},
             "buscar": {"type": "string", "description": "Fragmento EXACTO y unico del Main.py actual que se va a reemplazar (copiado literal)"},
             "reemplazar": {"type": "string", "description": "Codigo nuevo exacto que ira en lugar del fragmento"}},
-            "required": ["descripcion", "impacto", "buscar", "reemplazar"]}}}
+            "required": ["descripcion", "impacto", "buscar", "reemplazar"]}}},
+    {"type": "function", "function": {
+        "name": "guardar_nota",
+        "description": "Guarda una nota permanente en la memoria de largo plazo del agente (sobrevive reinicios y deploys)",
+        "parameters": {"type": "object", "properties": {
+            "nota": {"type": "string", "description": "Texto corto de la nota a recordar para siempre"}},
+            "required": ["nota"]}}}
 ]
 
 HISTORIAL = {}
-STATE = {"last_btc": None, "last_commits": {}, "last_report": None}
+STATE = {"last_btc": None, "last_commits": {}, "last_report": None, "turnos": 0}
 MODELOS_CACHE = {}
 PROPUESTAS = {}
 
@@ -106,6 +118,102 @@ def enviar_telegram(msg, chat=None):
                           json={"chat_id": ch, "text": str(msg)[:4000]}, timeout=15)
         except Exception:
             pass
+
+
+def leer_contexto():
+    import requests
+    try:
+        r = requests.get("https://api.github.com/repos/maximilianorojas2705-lumi/evocore-memoria/contents/contexto.json",
+                         headers={"Authorization": f"Bearer {GH_TOKEN}"}, timeout=15)
+        if r.status_code != 200:
+            return {"resumen": "", "ultimos": [], "notas": []}
+        c = json.loads(base64.b64decode(r.json()["content"]).decode())
+        return {"resumen": c.get("resumen", ""), "ultimos": c.get("ultimos", []), "notas": c.get("notas", [])}
+    except Exception:
+        return {"resumen": "", "ultimos": [], "notas": []}
+
+
+def guardar_contexto_ctx(ctx):
+    import requests
+    for _ in range(2):
+        try:
+            r0 = requests.get("https://api.github.com/repos/maximilianorojas2705-lumi/evocore-memoria/contents/contexto.json",
+                              headers={"Authorization": f"Bearer {GH_TOKEN}"}, timeout=15)
+            body = {"message": "contexto actualizado",
+                    "content": base64.b64encode(json.dumps(ctx, ensure_ascii=False).encode()).decode()}
+            if r0.status_code == 200:
+                body["sha"] = r0.json()["sha"]
+            r = requests.put("https://api.github.com/repos/maximilianorojas2705-lumi/evocore-memoria/contents/contexto.json",
+                             headers={"Authorization": f"Bearer {GH_TOKEN}"}, json=body, timeout=15)
+            if r.status_code in (200, 201):
+                return True
+        except Exception:
+            pass
+        time.sleep(1)
+    return False
+
+
+CONTEXTO = leer_contexto()
+
+
+def inyeccion_contexto(hist_len):
+    partes = []
+    if CONTEXTO.get("resumen"):
+        partes.append("RESUMEN DE SESIONES ANTERIORES:\n" + CONTEXTO["resumen"])
+    if CONTEXTO.get("notas"):
+        partes.append("NOTAS PERMANENTES:\n" + "\n".join("- " + n for n in CONTEXTO["notas"][-10:]))
+    if CONTEXTO.get("ultimos") and hist_len <= 1:
+        lineas = [f"{m['role']}: {m['content'][:300]}" for m in CONTEXTO["ultimos"][-4:]]
+        partes.append("ULTIMOS MENSAJES DE LA SESION PREVIA:\n" + "\n".join(lineas))
+    if not partes:
+        return ""
+    return "CONTEXTO RECUPERADO TRAS REINICIO:\n" + "\n\n".join(partes)
+
+
+def resumir_historial(hist):
+    lineas = []
+    for m in hist[-12:]:
+        lineas.append(f"{m['role']}: {(m.get('content') or '')[:300]}")
+    tarea = ("Resumi esta conversacion en maximo 150 palabras, en espanol, enfocandote en: "
+             "decisiones tomadas, tareas pendientes, datos importantes y aprendizajes. "
+             "Devolve SOLO el resumen.\n\n" + "\n".join(lineas))
+    r = llamar_obrero(tarea)
+    if r.startswith("obrero"):
+        return None
+    return r
+
+
+def persistir_contexto(chat):
+    try:
+        hist = HISTORIAL.get(chat, [])
+        ultimos = [{"role": m["role"], "content": (m.get("content") or "")[:400]} for m in hist[-6:]]
+        STATE["turnos"] = STATE.get("turnos", 0) + 1
+        if STATE["turnos"] % 8 == 0 and hist:
+            nuevo = resumir_historial(hist)
+            if nuevo:
+                CONTEXTO["resumen"] = nuevo[:1500]
+        ctx = {"resumen": CONTEXTO.get("resumen", ""),
+               "notas": CONTEXTO.get("notas", []),
+               "ultimos": ultimos,
+               "ts": time.time()}
+        if guardar_contexto_ctx(ctx):
+            CONTEXTO["ultimos"] = ultimos
+    except Exception as e:
+        print(f"[contexto] error: {e}")
+
+
+def guardar_nota(nota):
+    if not nota:
+        return "nota vacia"
+    notas = CONTEXTO.setdefault("notas", [])
+    fecha = datetime.now(timezone(timedelta(hours=-3))).strftime("%d/%m %H:%M")
+    notas.append(f"{fecha} - {nota[:200]}")
+    CONTEXTO["notas"] = notas[-20:]
+    ctx = {"resumen": CONTEXTO.get("resumen", ""), "notas": CONTEXTO["notas"],
+           "ultimos": CONTEXTO.get("ultimos", []), "ts": time.time()}
+    if guardar_contexto_ctx(ctx):
+        return f"Nota guardada en memoria permanente ({len(CONTEXTO['notas'])} notas)"
+    return "Error guardando la nota en GitHub"
 
 
 def transcribir_audio(file_id):
@@ -335,13 +443,18 @@ def pensar(msgs):
 def atender(texto, chat):
     hist = HISTORIAL.setdefault(chat, [])
     hist.append({"role": "user", "content": texto})
-    base = [{"role": "system", "content": SYSTEM_PROMPT}] + hist[-8:]
+    base = [{"role": "system", "content": SYSTEM_PROMPT}]
+    inj = inyeccion_contexto(len(hist))
+    if inj:
+        base.append({"role": "system", "content": inj})
+    base += hist[-8:]
     msgs = []
     for m in base:
         if m["role"] == "tool" and len(m.get("content", "")) > 1500:
             m = dict(m)
             m["content"] = m["content"][:1500] + "\n...[truncado]"
         msgs.append(m)
+    resultado = None
     for _ in range(12):
         try:
             m = pensar(msgs)
@@ -361,16 +474,21 @@ def atender(texto, chat):
                     salida = llamar_obrero(args.get("tarea", ""))
                 elif nombre == "proponer_mejora":
                     salida = registrar_propuesta(args)
+                elif nombre == "guardar_nota":
+                    salida = guardar_nota(args.get("nota", ""))
                 else:
                     salida = "herramienta desconocida"
                 if len(salida) > 1500:
                     salida = salida[:1500] + "\n...[truncado]"
                 msgs.append({"role": "tool", "name": nombre, "tool_call_id": tc["id"], "content": salida})
         else:
-            r = m.get("content") or "(sin respuesta)"
-            hist.append({"role": "assistant", "content": r})
-            return r
-    return "Me quede sin pasos para esta tarea."
+            resultado = m.get("content") or "(sin respuesta)"
+            hist.append({"role": "assistant", "content": resultado})
+            break
+    if resultado is None:
+        resultado = "Me quede sin pasos para esta tarea."
+    threading.Thread(target=persistir_contexto, args=(chat,), daemon=True).start()
+    return resultado
 
 
 def registrar_propuesta(args):
