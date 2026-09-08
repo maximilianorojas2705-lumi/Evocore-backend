@@ -337,6 +337,20 @@ Respondé 'apruebo {propuesta_id}' para aplicar, o 'rechazo {propuesta_id}' para
     return f"Propuesta {propuesta_id} registrada y enviada a Maxi"
 
 
+def encontrar_fragmento(contenido, buscar):
+    if buscar in contenido:
+        return buscar
+    lines = contenido.splitlines()
+    b_lines = [l.strip() for l in buscar.splitlines() if l.strip()]
+    if not b_lines:
+        return None
+    for i in range(len(lines) - len(b_lines) + 1):
+        window = [l.strip() for l in lines[i:i + len(b_lines)]]
+        if window == b_lines:
+            return "\n".join(lines[i:i + len(b_lines)])
+    return None
+
+
 def aprobar_propuesta(propuesta_id):
     import requests
     if propuesta_id not in PROPUESTAS:
@@ -356,12 +370,19 @@ def aprobar_propuesta(propuesta_id):
         data = r.json()
         sha = data["sha"]
         contenido = base64.b64decode(data["content"]).decode()
-        if buscar not in contenido:
+        frag = encontrar_fragmento(contenido, buscar)
+        if frag is None:
             p["estado"] = "fallida"
             return f"❌ El fragmento 'buscar' no existe en Main.py. Propuesta {propuesta_id} marcada como fallida."
-        if contenido.count(buscar) > 1:
-            return f"⚠️ El fragmento aparece {contenido.count(buscar)} veces: ambiguo. Pedile al agente un snippet más específico."
-        nuevo = contenido.replace(buscar, reemplazar, 1)
+        if contenido.count(frag) > 1:
+            return f"⚠️ El fragmento aparece {contenido.count(frag)} veces: ambiguo."
+        lines_orig = frag.splitlines()
+        indent = lines_orig[0][:len(lines_orig[0]) - len(lines_orig[0].lstrip())]
+        r_lines = reemplazar.splitlines()
+        if indent and r_lines and not r_lines[0].startswith(indent):
+            r_lines = [(indent + l) if l.strip() else l for l in r_lines]
+        nuevo_frag = "\n".join(r_lines)
+        nuevo = contenido.replace(frag, nuevo_frag, 1)
         r2 = requests.put("https://api.github.com/repos/maximilianorojas2705-lumi/Evocore-backend/contents/Main.py",
                           headers={"Authorization": f"Bearer {GH_TOKEN}"},
                           json={
@@ -461,7 +482,7 @@ def latido():
         r = requests.get('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_24hr_change=true', timeout=15).json()
         p = r['bitcoin']['usd']
         c24 = r['bitcoin']['usd_24h_change']
-        if STATE["last_btc"] and abs(p - STATE["last_btc"]) / STATE["last_btc"] * 100 >= 3:
+        if STATE["last_btc"] and abs(p - STATE["last_btc"]) / STATE["last_btc"] * 100 >= 2:
             enviar_telegram(f"Alerta Bitcoin: {p:.0f} USD | 24h: {c24:+.1f}%")
         STATE["last_btc"] = p
     except Exception:
