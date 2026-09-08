@@ -53,7 +53,16 @@ Después definí en la propuesta:
 - buscar: un fragmento EXACTO, copiado literal del código actual, que sea ÚNICO en el archivo (5 a 30 líneas)
 - reemplazar: el código nuevo exacto que irá en su lugar
 NUNCA propongas reescribir todo el archivo: siempre cambios quirúrgicos y mínimos.
-Maxi aprueba con 'apruebo [ID]' o rechaza con 'rechazo [ID]'. Si aprueba, el sistema reemplaza buscar por reemplazar y commitea solo."""
+Maxi aprueba con 'apruebo [ID]' o rechaza con 'rechazo [ID]'. Si aprueba, el sistema reemplaza buscar por reemplazar y commitea solo.
+
+RECORDATORIOS CON FECHA (tu agenda):
+Cuando Maxi pida un recordatorio o aviso futuro ("avisame el viernes a las 10 que X", "recordame mañana..."), guardalo en el repo evocore-memoria, archivo recordatorios.json, usando la API de GitHub desde ejecutar_python:
+- Formato del archivo: lista de objetos {"texto": "...", "cuando": epoch_segundos_UTC, "enviado": false}
+- Las horas que dice Maxi son hora argentina (UTC-3): convertí con datetime y timezone(timedelta(hours=-3)).
+- Primero imprimí la fecha actual del servidor para resolver dias relativos ("mañana", "el viernes").
+- Lee recordatorios.json (si da 404, empezá con lista vacia), agregá el item y guardalo con PUT (con sha si existe).
+- Confirmale a Maxi exactamente qué entendiste: texto + fecha y hora.
+El latido revisa recordatorios.json cada 5 minutos y envia el aviso por Telegram cuando llega la hora, marcandolo como enviado."""
 
 TOOLS = [
     {"type": "function", "function": {
@@ -399,6 +408,34 @@ def aprobar_propuesta(propuesta_id):
         return f"Error aplicando mejora: {type(e).__name__}: {e}"
 
 
+def leer_recordatorios():
+    import requests
+    r = requests.get("https://api.github.com/repos/maximilianorojas2705-lumi/evocore-memoria/contents/recordatorios.json",
+                     headers={"Authorization": f"Bearer {GH_TOKEN}"}, timeout=15)
+    if r.status_code == 404:
+        return [], None
+    if r.status_code != 200:
+        return [], None
+    data = r.json()
+    try:
+        return json.loads(base64.b64decode(data["content"]).decode()), data["sha"]
+    except Exception:
+        return [], data["sha"]
+
+
+def guardar_recordatorios(lista, sha):
+    import requests
+    body = {
+        "message": "recordatorios actualizados",
+        "content": base64.b64encode(json.dumps(lista, ensure_ascii=False, indent=1).encode()).decode()
+    }
+    if sha:
+        body["sha"] = sha
+    r = requests.put("https://api.github.com/repos/maximilianorojas2705-lumi/evocore-memoria/contents/recordatorios.json",
+                     headers={"Authorization": f"Bearer {GH_TOKEN}"}, json=body, timeout=15)
+    return r.status_code in [200, 201]
+
+
 def procesar(texto, chat):
     if texto.lower().startswith("apruebo "):
         propuesta_id = texto[8:].strip()
@@ -504,6 +541,19 @@ def latido():
             STATE["last_commits"][repo] = sha
         except Exception as e:
             print(f"[latido] error repos: {e}")
+    try:
+        recs, sha = leer_recordatorios()
+        cambiados = False
+        ahora = time.time()
+        for rec in recs:
+            if not rec.get("enviado") and rec.get("cuando", 0) <= ahora:
+                enviar_telegram(f"⏰ RECORDATORIO: {rec.get('texto', '')}")
+                rec["enviado"] = True
+                cambiados = True
+        if cambiados:
+            guardar_recordatorios(recs, sha)
+    except Exception as e:
+        print(f"[latido] recordatorios: {e}")
 
 
 @app.api_route("/", methods=["GET", "HEAD"])
