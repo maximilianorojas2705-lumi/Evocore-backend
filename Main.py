@@ -672,6 +672,8 @@ def atender(texto, chat):
 
 
 def registrar_propuesta(args):
+    if args.get('buscar', '').strip() == args.get('reemplazar', '').strip():
+        return 'Propuesta descartada: no hay diferencias entre buscar y reemplazar'
     import uuid
     propuesta_id = str(uuid.uuid4())[:8]
     PROPUESTAS[propuesta_id] = {
