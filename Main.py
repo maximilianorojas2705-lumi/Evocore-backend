@@ -54,14 +54,18 @@ codigo = r.text
 i = codigo.find('def aprobar_propuesta')
 print(codigo[i:i+1200])
 
-AUTO-MODIFICACIÓN QUIRÚRGICA CON VENTANA DE 3 MINUTOS:
+AUTO-MODIFICACIÓN QUIRÚRGICA CON CONTROL DE MAXI:
 CUANDO detectes una mejora posible a tu código, DEBES usar la herramienta proponer_mejora. NUNCA escribas la propuesta suelta en el texto.
 ANTES de proponer, lee SOLO el fragmento relevante de tu Main.py (ver regla anti-atragantamiento).
 Después definí en la propuesta:
 - buscar: un fragmento EXACTO, copiado literal del código actual, que sea ÚNICO en el archivo (5 a 30 líneas)
 - reemplazar: el código nuevo exacto que irá en su lugar
 NUNCA propongas reescribir todo el archivo: siempre cambios quirúrgicos y mínimos.
-Maxi tiene 3 MINUTOS para responder 'apruebo [ID]' o 'rechazo [ID]'. Si no responde en ese plazo, la mejora se aplica AUTOMÁTICAMENTE.
+HAY DOS MODOS DE CONTROL (Maxi los cambia por Telegram):
+- MODO SUPERVISADO (por defecto): cada propuesta espera su aprobacion SIN limite de tiempo ('apruebo [ID]' o 'rechazo [ID]'). Nunca se auto-aplica.
+- MODO AUTONOMO (cuando Maxi dice 'segui de corrido' o 'modo autonomo'): las propuestas se auto-aplican al instante sin esperarlo.
+- Maxi vuelve al control con 'frena' o 'modo supervisado'.
+Respeta siempre el modo vigente al registrar cada propuesta.
 
 RECORDATORIOS CON FECHA (tu agenda):
 Cuando Maxi pida un recordatorio o aviso futuro ("avisame el viernes a las 10 que X", "recordame mañana..."), guardalo en el repo evocore-memoria, archivo recordatorios.json, usando la API de GitHub desde ejecutar_python:
@@ -73,7 +77,7 @@ Cuando Maxi pida un recordatorio o aviso futuro ("avisame el viernes a las 10 qu
 El latido revisa recordatorios.json cada 5 minutos y envia el aviso por Telegram cuando llega la hora, marcandolo como enviado.
 
 MEMORIA DE LARGO PLAZO (contexto que sobrevive reinicios):
-Tenes un archivo contexto.json en el repo evocore-memoria con: resumen de sesiones, ultimos mensajes y notas permanentes.
+Tenes un archivo contexto.json en el repo evocore-memoria con: resumen de sesiones, ultimos mensajes, notas permanentes y el modo de control vigente.
 Al iniciar una conversacion puede aparecer un bloque "CONTEXTO RECUPERADO TRAS REINICIO": usalo para retomar donde quedaron sin preguntar de nuevo.
 Cuando Maxi diga "acordate de X", "guarda esto", o detectes un dato importante a largo plazo (preferencias, decisiones, datos de proyectos), usa la herramienta guardar_nota.
 Tu resumen de sesion se auto-actualiza cada 8 mensajes; no tenes que hacer nada.
@@ -102,7 +106,7 @@ TOOLS = [
             "required": ["tarea"]}}},
     {"type": "function", "function": {
         "name": "proponer_mejora",
-        "description": "Propone un cambio quirurgico al propio Main.py con ventana de aprobacion de 3 minutos",
+        "description": "Propone un cambio quirurgico al propio Main.py; se aplica segun el modo de control vigente",
         "parameters": {"type": "object", "properties": {
             "descripcion": {"type": "string", "description": "Descripción clara de la mejora"},
             "impacto": {"type": "string", "description": "Qué beneficio trae"},
@@ -168,11 +172,12 @@ def leer_contexto():
         r = requests.get("https://api.github.com/repos/maximilianorojas2705-lumi/evocore-memoria/contents/contexto.json",
                          headers={"Authorization": f"Bearer {GH_TOKEN}"}, timeout=15)
         if r.status_code != 200:
-            return {"resumen": "", "ultimos": [], "notas": []}
+            return {"resumen": "", "ultimos": [], "notas": [], "modo_autonomo": False}
         c = json.loads(base64.b64decode(r.json()["content"]).decode())
-        return {"resumen": c.get("resumen", ""), "ultimos": c.get("ultimos", []), "notas": c.get("notas", [])}
+        return {"resumen": c.get("resumen", ""), "ultimos": c.get("ultimos", []),
+                "notas": c.get("notas", []), "modo_autonomo": bool(c.get("modo_autonomo", False))}
     except Exception:
-        return {"resumen": "", "ultimos": [], "notas": []}
+        return {"resumen": "", "ultimos": [], "notas": [], "modo_autonomo": False}
 
 
 def guardar_contexto_ctx(ctx):
@@ -196,6 +201,19 @@ def guardar_contexto_ctx(ctx):
 
 
 CONTEXTO = leer_contexto()
+
+
+def ctx_completo():
+    return {"resumen": CONTEXTO.get("resumen", ""),
+            "notas": CONTEXTO.get("notas", []),
+            "ultimos": CONTEXTO.get("ultimos", []),
+            "modo_autonomo": bool(CONTEXTO.get("modo_autonomo", False)),
+            "ts": time.time()}
+
+
+def set_modo(autonomo):
+    CONTEXTO["modo_autonomo"] = bool(autonomo)
+    return guardar_contexto_ctx(ctx_completo())
 
 
 def inyeccion_contexto(hist_len):
@@ -234,12 +252,9 @@ def persistir_contexto(chat):
             nuevo = resumir_historial(hist)
             if nuevo:
                 CONTEXTO["resumen"] = nuevo[:1500]
-        ctx = {"resumen": CONTEXTO.get("resumen", ""),
-               "notas": CONTEXTO.get("notas", []),
-               "ultimos": ultimos,
-               "ts": time.time()}
-        if guardar_contexto_ctx(ctx):
-            CONTEXTO["ultimos"] = ultimos
+        CONTEXTO["ultimos"] = ultimos
+        if guardar_contexto_ctx(ctx_completo()):
+            pass
     except Exception as e:
         print(f"[contexto] error: {e}")
 
@@ -251,9 +266,7 @@ def guardar_nota(nota):
     fecha = datetime.now(timezone(timedelta(hours=-3))).strftime("%d/%m %H:%M")
     notas.append(f"{fecha} - {nota[:200]}")
     CONTEXTO["notas"] = notas[-20:]
-    ctx = {"resumen": CONTEXTO.get("resumen", ""), "notas": CONTEXTO["notas"],
-           "ultimos": CONTEXTO.get("ultimos", []), "ts": time.time()}
-    if guardar_contexto_ctx(ctx):
+    if guardar_contexto_ctx(ctx_completo()):
         return f"Nota guardada en memoria permanente ({len(CONTEXTO['notas'])} notas)"
     return "Error guardando la nota en GitHub"
 
@@ -609,7 +622,7 @@ def registrar_propuesta(args):
         "estado": "pendiente",
         "timestamp": time.time()
     }
-    msg = f"""💡 PROPUESTA DE MEJORA (ID: {propuesta_id})
+    cuerpo = f"""💡 PROPUESTA DE MEJORA (ID: {propuesta_id})
 
 📝 Descripción:
 {args.get("descripcion", "")}
@@ -621,23 +634,17 @@ def registrar_propuesta(args):
 - Busca este fragmento exacto:
 {args.get("buscar", "")[:400]}
 - Lo reemplaza por:
-{args.get("reemplazar", "")[:400]}
-
-⏰ TENÉS 3 MINUTOS:
-- 'apruebo {propuesta_id}' → se aplica ya
-- 'rechazo {propuesta_id}' → se descarta
-- Sin respuesta en 3 min → SE APLICA AUTOMÁTICAMENTE"""
-    enviar_telegram(msg)
-    threading.Thread(target=ventana_aprobacion, args=(propuesta_id,), daemon=True).start()
-    return f"Propuesta {propuesta_id} registrada con ventana de 3 minutos"
+{args.get("reemplazar", "")[:400]}"""
+    if CONTEXTO.get("modo_autonomo"):
+        enviar_telegram(cuerpo + f"\n\n🟢 MODO AUTÓNOMO: aplicando sin esperar aprobación.")
+        threading.Thread(target=aplicar_inmediata, args=(propuesta_id,), daemon=True).start()
+    else:
+        enviar_telegram(cuerpo + f"\n\n🔴 MODO SUPERVISADO: queda esperando TU decisión sin límite de tiempo.\n- 'apruebo {propuesta_id}' → se aplica\n- 'rechazo {propuesta_id}' → se descarta")
+    return f"Propuesta {propuesta_id} registrada (modo {'autonomo' if CONTEXTO.get('modo_autonomo') else 'supervisado'})"
 
 
-def ventana_aprobacion(propuesta_id):
-    time.sleep(180)
-    p = PROPUESTAS.get(propuesta_id)
-    if not p or p.get("estado") != "pendiente":
-        return
-    print(f"[propuestas] ventana vencida para {propuesta_id}: auto-aplicando")
+def aplicar_inmediata(propuesta_id):
+    time.sleep(2)
     aprobar_propuesta(propuesta_id, auto=True)
 
 
@@ -697,9 +704,9 @@ def aprobar_propuesta(propuesta_id, auto=False):
         if r2.status_code in [200, 201]:
             p["estado"] = "aprobada"
             if auto:
-                enviar_telegram(f"⏰ AUTO-APROBADA (3 min sin respuesta): propuesta {propuesta_id} APLICADA. Commit hecho, deploy en curso...")
+                enviar_telegram(f"🟢 Propuesta {propuesta_id} APLICADA (modo autónomo). Commit hecho, deploy en curso...")
             else:
-                enviar_telegram(f"✅ Propuesta {propuesta_id} APLICADA. Commit hecho, deploy en curso...")
+                enviar_telegram(f"✅ Propuesta {propuesta_id} APLICADA por aprobación de Maxi. Commit hecho, deploy en curso...")
             return "Mejora aplicada"
         return f"Error en commit: {r2.status_code} {r2.text[:200]}"
     except Exception as e:
@@ -735,12 +742,25 @@ def guardar_recordatorios(lista, sha):
 
 
 def procesar(texto, chat):
-    if texto.lower().startswith("apruebo "):
+    t = texto.lower().strip()
+    if t.startswith("modo autonomo") or t.startswith("modo autónomo") or t.startswith("segui de corrido") or t.startswith("seguí de corrido"):
+        if set_modo(True):
+            enviar_telegram("🟢 MODO AUTÓNOMO ACTIVADO: las propuestas se auto-aplican al instante sin esperarte. Decí 'frená' o 'modo supervisado' para recuperar el control total.", chat)
+        else:
+            enviar_telegram("⚠️ No pude guardar el modo en memoria; queda autónomo solo en esta sesión.", chat)
+        return
+    if t.startswith("modo supervisado") or t.startswith("frena") or t.startswith("frená") or t.startswith("detene") or t.startswith("detené"):
+        if set_modo(False):
+            enviar_telegram("🔴 MODO SUPERVISADO ACTIVADO: toda auto-modificación espera TU aprobación sin límite de tiempo. Nada se aplica sin tu 'apruebo'.", chat)
+        else:
+            enviar_telegram("⚠️ No pude guardar el modo en memoria; queda supervisado solo en esta sesión.", chat)
+        return
+    if t.startswith("apruebo "):
         propuesta_id = texto[8:].strip()
         resultado = aprobar_propuesta(propuesta_id)
         enviar_telegram(resultado, chat)
         return
-    if texto.lower().startswith("rechazo "):
+    if t.startswith("rechazo "):
         propuesta_id = texto[8:].strip()
         if propuesta_id in PROPUESTAS:
             PROPUESTAS[propuesta_id]["estado"] = "rechazada"
