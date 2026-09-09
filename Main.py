@@ -66,6 +66,7 @@ HAY DOS MODOS DE CONTROL (Maxi los cambia por Telegram):
 - MODO AUTONOMO (cuando Maxi dice 'segui de corrido' o 'modo autonomo'): las propuestas se auto-aplican al instante sin esperarlo.
 - Maxi vuelve al control con 'frena' o 'modo supervisado'.
 Respeta siempre el modo vigente al registrar cada propuesta.
+CADA mejora aplicada genera automaticamente un REPORTE por Telegram (que se cambio, para que sirve, antes/despues, modo de aprobacion) y queda anotada en historial_mejoras.json del repo evocore-memoria. Si Maxi pide 'lista actualizaciones', mostrale las ultimas del historial con fecha y motivo.
 
 RECORDATORIOS CON FECHA (tu agenda):
 Cuando Maxi pida un recordatorio o aviso futuro ("avisame el viernes a las 10 que X", "recordame mañana..."), guardalo en el repo evocore-memoria, archivo recordatorios.json, usando la API de GitHub desde ejecutar_python:
@@ -253,8 +254,7 @@ def persistir_contexto(chat):
             if nuevo:
                 CONTEXTO["resumen"] = nuevo[:1500]
         CONTEXTO["ultimos"] = ultimos
-        if guardar_contexto_ctx(ctx_completo()):
-            pass
+        guardar_contexto_ctx(ctx_completo())
     except Exception as e:
         print(f"[contexto] error: {e}")
 
@@ -269,6 +269,66 @@ def guardar_nota(nota):
     if guardar_contexto_ctx(ctx_completo()):
         return f"Nota guardada en memoria permanente ({len(CONTEXTO['notas'])} notas)"
     return "Error guardando la nota en GitHub"
+
+
+def leer_historial_mejoras():
+    import requests
+    try:
+        r = requests.get("https://api.github.com/repos/maximilianorojas2705-lumi/evocore-memoria/contents/historial_mejoras.json",
+                         headers={"Authorization": f"Bearer {GH_TOKEN}"}, timeout=15)
+        if r.status_code != 200:
+            return [], None
+        data = r.json()
+        try:
+            return json.loads(base64.b64decode(data["content"]).decode()), data["sha"]
+        except Exception:
+            return [], data["sha"]
+    except Exception:
+        return [], None
+
+
+def registrar_mejora_aplicada(p, propuesta_id, modo):
+    import requests
+    try:
+        hist, sha = leer_historial_mejoras()
+        hist.append({
+            "id": propuesta_id,
+            "fecha": datetime.now(timezone(timedelta(hours=-3))).strftime("%d/%m/%Y %H:%M"),
+            "descripcion": p.get("descripcion", "")[:200],
+            "impacto": p.get("impacto", "")[:200],
+            "modo": modo,
+            "buscar": p.get("buscar", "")[:150],
+            "reemplazar": p.get("reemplazar", "")[:150]
+        })
+        hist = hist[-30:]
+        body = {"message": "historial de mejoras actualizado",
+                "content": base64.b64encode(json.dumps(hist, ensure_ascii=False, indent=1).encode()).decode()}
+        if sha:
+            body["sha"] = sha
+        requests.put("https://api.github.com/repos/maximilianorojas2705-lumi/evocore-memoria/contents/historial_mejoras.json",
+                     headers={"Authorization": f"Bearer {GH_TOKEN}"}, json=body, timeout=15)
+    except Exception as e:
+        print(f"[mejoras] error registrando: {e}")
+
+
+def reporte_actualizacion(p, propuesta_id, modo):
+    return f"""📋 REPORTE DE ACTUALIZACIÓN (ID {propuesta_id})
+
+🔧 Qué se cambió:
+{p.get('descripcion', '')}
+
+🎯 Para qué sirve:
+{p.get('impacto', '')}
+
+📄 Antes:
+{p.get('buscar', '')[:300]}
+
+📄 Ahora:
+{p.get('reemplazar', '')[:300]}
+
+🕐 Modo de aprobación: {modo}
+️ Anotado en historial_mejoras.json (pedí 'listá actualizaciones' cuando quieras)
+🚀 Commit hecho, deploy en curso (~1-2 min)"""
 
 
 def leer_autotareas():
@@ -636,7 +696,7 @@ def registrar_propuesta(args):
 - Lo reemplaza por:
 {args.get("reemplazar", "")[:400]}"""
     if CONTEXTO.get("modo_autonomo"):
-        enviar_telegram(cuerpo + f"\n\n🟢 MODO AUTÓNOMO: aplicando sin esperar aprobación.")
+        enviar_telegram(cuerpo + "\n\n🟢 MODO AUTÓNOMO: aplicando sin esperar aprobación.")
         threading.Thread(target=aplicar_inmediata, args=(propuesta_id,), daemon=True).start()
     else:
         enviar_telegram(cuerpo + f"\n\n🔴 MODO SUPERVISADO: queda esperando TU decisión sin límite de tiempo.\n- 'apruebo {propuesta_id}' → se aplica\n- 'rechazo {propuesta_id}' → se descarta")
@@ -703,10 +763,9 @@ def aprobar_propuesta(propuesta_id, auto=False):
                           }, timeout=30)
         if r2.status_code in [200, 201]:
             p["estado"] = "aprobada"
-            if auto:
-                enviar_telegram(f"🟢 Propuesta {propuesta_id} APLICADA (modo autónomo). Commit hecho, deploy en curso...")
-            else:
-                enviar_telegram(f"✅ Propuesta {propuesta_id} APLICADA por aprobación de Maxi. Commit hecho, deploy en curso...")
+            modo_txt = "autónomo (auto-aplicada sin espera)" if auto else "aprobación manual de Maxi"
+            registrar_mejora_aplicada(p, propuesta_id, modo_txt)
+            enviar_telegram(reporte_actualizacion(p, propuesta_id, modo_txt))
             return "Mejora aplicada"
         return f"Error en commit: {r2.status_code} {r2.text[:200]}"
     except Exception as e:
@@ -754,6 +813,16 @@ def procesar(texto, chat):
             enviar_telegram("🔴 MODO SUPERVISADO ACTIVADO: toda auto-modificación espera TU aprobación sin límite de tiempo. Nada se aplica sin tu 'apruebo'.", chat)
         else:
             enviar_telegram("⚠️ No pude guardar el modo en memoria; queda supervisado solo en esta sesión.", chat)
+        return
+    if t.startswith("lista actualizaciones") or t.startswith("listá actualizaciones") or t.startswith("actualizaciones") or t.startswith("que se actualizo") or t.startswith("qué se actualizó"):
+        hist, _ = leer_historial_mejoras()
+        if not hist:
+            enviar_telegram("📋 No hay actualizaciones registradas todavía.", chat)
+        else:
+            lineas = []
+            for h in hist[-10:]:
+                lineas.append(f"• {h.get('fecha', '')} | ID {h.get('id', '')} | {h.get('modo', '')}\n   Qué: {h.get('descripcion', '')}\n   Para qué: {h.get('impacto', '')}")
+            enviar_telegram("📋 ÚLTIMAS ACTUALIZACIONES APLICADAS:\n\n" + "\n\n".join(lineas), chat)
         return
     if t.startswith("apruebo "):
         propuesta_id = texto[8:].strip()
