@@ -22,6 +22,8 @@ Datos de Maxi: GitHub maximilianorojas2705-lumi, repos Earnfi y nexus-backend, p
 Estilo: directo, sin sermones. Usa emojis ok/atencion/critico.
 Despues de cada tarea agrega mini ciclo evolutivo: que hiciste, que salio mal, que aprendiste.
 
+COMANDOS RAPIDOS DEL SERVIDOR: Maxi tiene /btc /dolar /clima /memoria /estado /ayuda que responde el servidor directo sin pasar por vos. No intentes replicarlos ni interferir: son atajos instantaneos sin cerebro.
+
 OBREROS ESPECIALISTAS (herramienta delegar_a_obrero con parametro perfil):
 - 'reviewer': revisor de codigo senior estricto, cazador de bugs y riesgos. Usalo para analizar codigo, diffs y seguridad.
 - 'investigador': creativo para brainstorm, diseños y alternativas no obvias.
@@ -67,6 +69,7 @@ HAY DOS MODOS DE CONTROL (Maxi los cambia por Telegram):
 - Maxi vuelve al control con 'frena' o 'modo supervisado'.
 Respeta siempre el modo vigente al registrar cada propuesta.
 CADA mejora aplicada genera automaticamente un REPORTE por Telegram (que se cambio, para que sirve, antes/despues, modo de aprobacion) y queda anotada en historial_mejoras.json del repo evocore-memoria. Si Maxi pide 'lista actualizaciones', mostrale las ultimas del historial con fecha y motivo.
+Si una propuesta tiene buscar identico a reemplazar, la herramienta la descarta sola (guarda anti-no-op).
 
 RECORDATORIOS CON FECHA (tu agenda):
 Cuando Maxi pida un recordatorio o aviso futuro ("avisame el viernes a las 10 que X", "recordame mañana..."), guardalo en el repo evocore-memoria, archivo recordatorios.json, usando la API de GitHub desde ejecutar_python:
@@ -165,6 +168,72 @@ def enviar_telegram(msg, chat=None):
                           json={"chat_id": ch, "text": str(msg)[:4000]}, timeout=15)
         except Exception:
             pass
+
+
+def comando_rapido(texto):
+    import requests
+    t = texto.strip().lower()
+    try:
+        if t == "/btc":
+            r = requests.get('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_24hr_change=true', timeout=15).json()
+            p = r['bitcoin']['usd']
+            c = r['bitcoin']['usd_24h_change']
+            return f"💰 BTC: ${p:,.0f} USD | 24h: {c:+.1f}%"
+        if t == "/dolar":
+            r = requests.get('https://dolarapi.com/v1/dolares', timeout=15).json()
+            lineas = []
+            for d in r:
+                lineas.append(f"- {d.get('nombre', '?')}: compra {d.get('compra', '?')} / venta {d.get('venta', '?')}")
+            return "💵 Dólares Argentina:\n" + "\n".join(lineas)
+        if t.startswith("/clima"):
+            ciudad = texto.strip()[6:].strip() or "Cordoba"
+            g = requests.get('https://geocoding-api.open-meteo.com/v1/search',
+                             params={'name': ciudad, 'count': 1}, timeout=15).json()
+            res = g.get('results') or []
+            if not res:
+                return f"⚠️ No encontré la ciudad: {ciudad}"
+            lat = res[0]['latitude']
+            lon = res[0]['longitude']
+            nombre = res[0]['name']
+            w = requests.get('https://api.open-meteo.com/v1/forecast',
+                             params={'latitude': lat, 'longitude': lon, 'current_weather': 'true'}, timeout=15).json()
+            cw = w.get('current_weather', {})
+            return f"🌤️ {nombre}: {cw.get('temperature', '?')}°C | viento {cw.get('windspeed', '?')} km/h"
+        if t == "/memoria":
+            notas = CONTEXTO.get('notas', [])[-5:]
+            recs, _ = leer_recordatorios()
+            pendientes = [x for x in recs if not x.get('enviado')]
+            tareas, _ = leer_autotareas()
+            activas = [x for x in tareas if x.get('activa')]
+            lineas = ["📝 Últimas notas:"]
+            if notas:
+                lineas += [f"- {n}" for n in notas]
+            else:
+                lineas.append("- (sin notas)")
+            lineas.append(f"⏰ Recordatorios pendientes: {len(pendientes)}")
+            lineas.append(f"🤖 Auto-tareas activas: {len(activas)}")
+            lineas.append(f"🕐 Modo: {'autónomo' if CONTEXTO.get('modo_autonomo') else 'supervisado'}")
+            return "\n".join(lineas)
+        if t == "/estado":
+            lineas = [f"🕐 Modo: {'autónomo' if CONTEXTO.get('modo_autonomo') else 'supervisado'}"]
+            if STATE.get('last_btc'):
+                lineas.append(f"💰 Último BTC: ${STATE['last_btc']:,.0f}")
+            tareas, _ = leer_autotareas()
+            lineas.append(f"🤖 Auto-tareas activas: {len([x for x in tareas if x.get('activa')])}")
+            recs, _ = leer_recordatorios()
+            lineas.append(f"⏰ Recordatorios pendientes: {len([x for x in recs if not x.get('enviado')])}")
+            lineas.append("🧠 Cerebros: groq + cerebras + openrouter + gemini")
+            lineas.append("🐕 Centinelas: uptime + render + actions")
+            return "\n".join(lineas)
+        if t in ["/ayuda", "/comandos"]:
+            return ("⚡ Comandos rápidos (instantáneos, sin cerebro):\n"
+                    "/btc · /dolar · /clima [ciudad] · /memoria · /estado · /ayuda\n\n"
+                    "🎛️ Control:\n"
+                    "modo supervisado · segui de corrido · frena\n"
+                    "apruebo [ID] · rechazo [ID] · listá actualizaciones")
+    except Exception as e:
+        return f"⚠️ Comando falló: {type(e).__name__}: {e}"
+    return None
 
 
 def leer_contexto():
@@ -672,9 +741,9 @@ def atender(texto, chat):
 
 
 def registrar_propuesta(args):
+    import uuid
     if args.get('buscar', '').strip() == args.get('reemplazar', '').strip():
         return 'Propuesta descartada: no hay diferencias entre buscar y reemplazar'
-    import uuid
     propuesta_id = str(uuid.uuid4())[:8]
     PROPUESTAS[propuesta_id] = {
         "descripcion": args.get("descripcion", ""),
@@ -803,6 +872,11 @@ def guardar_recordatorios(lista, sha):
 
 
 def procesar(texto, chat):
+    if texto.strip().startswith("/"):
+        r = comando_rapido(texto)
+        if r is not None:
+            enviar_telegram(r, chat)
+            return
     t = texto.lower().strip()
     if t.startswith("modo autonomo") or t.startswith("modo autónomo") or t.startswith("segui de corrido") or t.startswith("seguí de corrido"):
         if set_modo(True):
