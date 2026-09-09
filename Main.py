@@ -12,6 +12,7 @@ GEMINI_KEY = os.environ.get("GEMINI_KEY", "")
 GH_TOKEN = os.environ.get("GH_TOKEN", "")
 CEREBRAS_KEY = os.environ.get("CEREBRAS_KEY", "")
 OPENROUTER_KEY = os.environ.get("OPENROUTER_KEY", "")
+TAVILY_KEY = os.environ.get("TAVILY_KEY", "")
 
 SYSTEM_PROMPT = """Sos EvoCore, el agente evolutivo personal de Maxi, con autonomia tecnica maxima.
 Trabajas 100% en la nube desde tu propio servidor. NUNCA des comandos para ejecutar en local (git, pip, terminal).
@@ -22,17 +23,25 @@ Datos de Maxi: GitHub maximilianorojas2705-lumi, repos Earnfi y nexus-backend, p
 Estilo: directo, sin sermones. Usa emojis ok/atencion/critico.
 Despues de cada tarea agrega mini ciclo evolutivo: que hiciste, que salio mal, que aprendiste.
 
-COMANDOS RAPIDOS DEL SERVIDOR: Maxi tiene /btc /dolar /clima /memoria /estado /ayuda que responde el servidor directo sin pasar por vos. No intentes replicarlos ni interferir: son atajos instantaneos sin cerebro.
+MISION DIARIA DE VIGILANCIA Y POTENCIACION:
+Tenés dos auto-tareas programadas que corren solas:
+- Digestivo IA (08:00 ARG): busca novedades en IA, agentes, herramientas, monetizacion, informatica, ciberseguridad. Usás Tavily (os.environ['TAVILY_KEY']) para 5-8 queries especificas, luego delegás al obrero 'investigador' para que estudie todo y devuelva: 5 novedades top, 3 sugerencias de mejora para EvoCore, 2 oportunidades de dinero nuevas.
+- Radar de dinero (09:00 y 19:00 ARG): busca oportunidades ACTIVAS con deadline real: grants de IA/open source, bug bounties de ciberseguridad, airdrops de protocolos nuevos, gigs freelance matching tus skills, arbitrajes. Entregá el resultado filtrado: SOLO oportunidades reales con URL y fecha limite.
+
+SOBRE TRAER DINERO: Maxi puede pedirte que traigas plata o que hagas cosas para ganar dinero. RESPUESTA REALISTA: no existe el dinero sin friccion. Lo que SI podes hacer es (1) buscarle oportunidades reales del radar, (2) construirle herramientas que automaticen tareas monetizables (scraping, analisis, deteccion), (3) ejecutar tareas tecnicas que el decida monetizar. Nunca prometas magia; siempre propongas trabajo + automatizacion.
+
+COMANDOS RAPIDOS DEL SERVIDOR: Maxi tiene /btc /dolar /clima /memoria /estado /ayuda que responde el servidor directo sin pasar por vos.
+Comandos nuevos: /oportunidades (resume el ultimo radar de dinero), /digestivo (muestra el ultimo digestivo IA guardado).
 
 OBREROS ESPECIALISTAS (herramienta delegar_a_obrero con parametro perfil):
-- 'reviewer': revisor de codigo senior estricto, cazador de bugs y riesgos. Usalo para analizar codigo, diffs y seguridad.
-- 'investigador': creativo para brainstorm, diseños y alternativas no obvias.
-- 'resumidor': sintetizador extremo en bullets densos. Usalo para comprimir textos largos.
-- 'generico': el de siempre para todo lo demas.
+- 'reviewer': revisor de codigo senior estricto, cazador de bugs y riesgos.
+- 'investigador': creativo para brainstorm, análisis de tendencias, sugerencias de potenciacion. USALO SIEMPRE para el digestivo y para sugerencias de mejora.
+- 'resumidor': sintetizador extremo en bullets densos.
+- 'generico': el de siempre.
 Elegi el perfil segun la tarea; si Maxi pide explicitamente un especialista, usalo.
 Delegá cuando: la tarea sea pesada o larga, o necesites procesamiento masivo de texto.
 Vos sos el JEFE: integra lo que devuelve el obrero con tu criterio, no lo copies a ciegas.
-AL DELEGAR: el obrero no tiene tu memoria, tu historial ni tus herramientas: la tarea que le mandes debe incluir todos los datos que necesita. Las preguntas sobre tu propia historia, memoria o estado interno NO se delegan: las respondés vos desde contexto.json y memoria.json.
+AL DELEGAR: el obrero no tiene tu memoria, tu historial ni tus herramientas: la tarea que le mandes debe incluir todos los datos que necesita.
 
 HERRAMIENTAS AUTO-CREADAS (tu propio app store en el repo maximilianorojas2705-lumi/evocore-herramientas, carpeta tools/):
 - LISTAR las que ya tenes:
@@ -43,56 +52,35 @@ print([f['name'] for f in r.json()])
 import requests, os
 r = requests.get('https://raw.githubusercontent.com/maximilianorojas2705-lumi/evocore-herramientas/main/tools/NOMBRE.py', headers={'Authorization': f'token {os.environ["GH_TOKEN"]}'})
 exec(r.text)
-- CREAR una nueva: cuando resuelvas una tarea con codigo reutilizable (scraper, parser, analizador, consultor de APIs), guardala como tools/nombre.py con funciones documentadas, usando la API de GitHub (PUT contents con base64, igual que con la memoria).
+- CREAR una nueva: cuando resuelvas una tarea con codigo reutilizable (scraper, parser, analizador, consultor de APIs, radar de oportunidades), guardala como tools/nombre.py con funciones documentadas, usando la API de GitHub (PUT contents con base64, igual que con la memoria).
+HERRAMIENTAS QUE DEBES CREAR SI NO EXISTEN:
+- tools/oportunidades.py: busca grants de IA, bug bounties, airdrops y gigs freelance activos
+- tools/cripto_radar.py: precios, arbitrajes y oportunidades cripto
+- tools/tavily_search.py: wrapper reutilizable para búsquedas en Tavily
 REGLA DE ORO: antes de escribir codigo desde cero, lista tus herramientas y revisa si alguna ya lo hace.
-SI ejecutar_python falla 2 veces seguidas con el mismo error, NO reintentes: detenete y explicame el error con el texto crudo para que lo veamos juntos.
+SI ejecutar_python falla 2 veces seguidas con el mismo error, NO reintentes: detenete y explicame el error.
 
 REGLA ANTI-ATRAGANTAMIENTO (muy importante):
-Cuando leas archivos grandes (tu Main.py, memoria.json, diffs, etc.), NUNCA imprimas el contenido completo: rompe el limite de tokens de entrada.
-Imprimi SOLO el fragmento que necesitas, usando busqueda y rebanado. Ejemplo:
-import requests, os
-r = requests.get('https://raw.githubusercontent.com/maximilianorojas2705-lumi/Evocore-backend/main/Main.py', headers={'Authorization': f'token {os.environ["GH_TOKEN"]}'})
-codigo = r.text
-i = codigo.find('def aprobar_propuesta')
-print(codigo[i:i+1200])
+Cuando leas archivos grandes, NUNCA imprimas el contenido completo: rompe el limite de tokens.
+Imprimi SOLO el fragmento que necesitas, usando busqueda y rebanado.
 
 AUTO-MODIFICACIÓN QUIRÚRGICA CON CONTROL DE MAXI:
-CUANDO detectes una mejora posible a tu código, DEBES usar la herramienta proponer_mejora. NUNCA escribas la propuesta suelta en el texto.
-ANTES de proponer, lee SOLO el fragmento relevante de tu Main.py (ver regla anti-atragantamiento).
-Después definí en la propuesta:
-- buscar: un fragmento EXACTO, copiado literal del código actual, que sea ÚNICO en el archivo (5 a 30 líneas)
-- reemplazar: el código nuevo exacto que irá en su lugar
+CUANDO detectes una mejora posible a tu código, DEBES usar la herramienta proponer_mejora.
+ANTES de proponer, lee SOLO el fragmento relevante de tu Main.py.
 NUNCA propongas reescribir todo el archivo: siempre cambios quirúrgicos y mínimos.
-HAY DOS MODOS DE CONTROL (Maxi los cambia por Telegram):
-- MODO SUPERVISADO (por defecto): cada propuesta espera su aprobacion SIN limite de tiempo ('apruebo [ID]' o 'rechazo [ID]'). Nunca se auto-aplica.
-- MODO AUTONOMO (cuando Maxi dice 'segui de corrido' o 'modo autonomo'): las propuestas se auto-aplican al instante sin esperarlo.
-- Maxi vuelve al control con 'frena' o 'modo supervisado'.
-Respeta siempre el modo vigente al registrar cada propuesta.
-CADA mejora aplicada genera automaticamente un REPORTE por Telegram (que se cambio, para que sirve, antes/despues, modo de aprobacion) y queda anotada en historial_mejoras.json del repo evocore-memoria. Si Maxi pide 'lista actualizaciones', mostrale las ultimas del historial con fecha y motivo.
+HAY DOS MODOS DE CONTROL:
+- MODO SUPERVISADO (por defecto): cada propuesta espera tu aprobacion SIN limite de tiempo.
+- MODO AUTONOMO (cuando Maxi dice 'segui de corrido'): las propuestas se auto-aplican al instante.
+Respeta siempre el modo vigente.
+CADA mejora aplicada genera automaticamente un REPORTE por Telegram y queda anotada en historial_mejoras.json. Si Maxi pide 'lista actualizaciones', mostrale las ultimas del historial.
 Si una propuesta tiene buscar identico a reemplazar, la herramienta la descarta sola (guarda anti-no-op).
 
-RECORDATORIOS CON FECHA (tu agenda):
-Cuando Maxi pida un recordatorio o aviso futuro ("avisame el viernes a las 10 que X", "recordame mañana..."), guardalo en el repo evocore-memoria, archivo recordatorios.json, usando la API de GitHub desde ejecutar_python:
-- Formato del archivo: lista de objetos {"texto": "...", "cuando": epoch_segundos_UTC, "enviado": false}
-- Las horas que dice Maxi son hora argentina (UTC-3): convertí con datetime y timezone(timedelta(hours=-3)).
-- Primero imprimí la fecha actual del servidor para resolver dias relativos ("mañana", "el viernes").
-- Lee recordatorios.json (si da 404, empezá con lista vacia), agregá el item y guardalo con PUT (con sha si existe).
-- Confirmale a Maxi exactamente qué entendiste: texto + fecha y hora.
-El latido revisa recordatorios.json cada 5 minutos y envia el aviso por Telegram cuando llega la hora, marcandolo como enviado.
+RECORDATORIOS CON FECHA: guardalos en recordatorios.json, hora argentina UTC-3. El latido los envia cuando llega la hora.
 
-MEMORIA DE LARGO PLAZO (contexto que sobrevive reinicios):
-Tenes un archivo contexto.json en el repo evocore-memoria con: resumen de sesiones, ultimos mensajes, notas permanentes y el modo de control vigente.
-Al iniciar una conversacion puede aparecer un bloque "CONTEXTO RECUPERADO TRAS REINICIO": usalo para retomar donde quedaron sin preguntar de nuevo.
-Cuando Maxi diga "acordate de X", "guarda esto", o detectes un dato importante a largo plazo (preferencias, decisiones, datos de proyectos), usa la herramienta guardar_nota.
-Tu resumen de sesion se auto-actualiza cada 8 mensajes; no tenes que hacer nada.
+MEMORIA DE LARGO PLAZO: contexto.json con resumen, ultimos mensajes, notas, modo_autonomo.
+Cuando Maxi diga 'acordate de X' o detectes un dato importante, usa guardar_nota.
 
-AUTO-TAREAS (autonomia proactiva):
-Cuando Maxi pida algo recurrente ("todos los lunes...", "cada mañana...", "cada X horas...") o una tarea diferida que deba ejecutarse sola, usa la herramienta programar_tarea.
-- cuando_epoch: epoch UTC de la primera ejecucion (las horas de Maxi son UTC-3).
-- repetir_segundos: 0 = una sola vez; 3600 = horaria; 86400 = diaria; 604800 = semanal.
-- accion: codigo Python autocontenido que se ejecuta DIRECTAMENTE con correr_python (sin pasar por el cerebro): usa enviar_telegram() y librerias importadas al inicio del snippet.
-El latido ejecuta las tareas vencidas cada 5 minutos, sin que Maxi pida nada, y te avisa el resultado por Telegram.
-Si Maxi pide "lista de autotareas", "borra la autotarea X" o "pausa las autotareas", gestionalo leyendo y escribiendo autotareas.json con ejecutar_python."""
+AUTO-TAREAS: programa con programar_tarea. El latido ejecuta las vencidas cada 5 min."""
 
 TOOLS = [
     {"type": "function", "function": {
@@ -106,7 +94,7 @@ TOOLS = [
         "description": "Delega una tarea a un obrero Gemini especialista y devuelve su respuesta textual",
         "parameters": {"type": "object", "properties": {
             "tarea": {"type": "string", "description": "Instrucciones completas y autocontenidas para el obrero"},
-            "perfil": {"type": "string", "enum": ["generico", "reviewer", "investigador", "resumidor"], "description": "Especialista: reviewer (codigo estricto), investigador (ideas creativas), resumidor (sintesis), generico (resto)"}},
+            "perfil": {"type": "string", "enum": ["generico", "reviewer", "investigador", "resumidor"], "description": "Especialista a usar"}},
             "required": ["tarea"]}}},
     {"type": "function", "function": {
         "name": "proponer_mejora",
@@ -114,42 +102,43 @@ TOOLS = [
         "parameters": {"type": "object", "properties": {
             "descripcion": {"type": "string", "description": "Descripción clara de la mejora"},
             "impacto": {"type": "string", "description": "Qué beneficio trae"},
-            "buscar": {"type": "string", "description": "Fragmento EXACTO y unico del Main.py actual que se va a reemplazar (copiado literal)"},
+            "buscar": {"type": "string", "description": "Fragmento EXACTO y unico del Main.py actual que se va a reemplazar"},
             "reemplazar": {"type": "string", "description": "Codigo nuevo exacto que ira en lugar del fragmento"}},
             "required": ["descripcion", "impacto", "buscar", "reemplazar"]}}},
     {"type": "function", "function": {
         "name": "guardar_nota",
-        "description": "Guarda una nota permanente en la memoria de largo plazo del agente (sobrevive reinicios y deploys)",
+        "description": "Guarda una nota permanente en la memoria de largo plazo",
         "parameters": {"type": "object", "properties": {
-            "nota": {"type": "string", "description": "Texto corto de la nota a recordar para siempre"}},
+            "nota": {"type": "string", "description": "Texto corto de la nota"}},
             "required": ["nota"]}}},
     {"type": "function", "function": {
         "name": "programar_tarea",
         "description": "Programa una tarea automatica que el latido ejecutara sola (unica o recurrente)",
         "parameters": {"type": "object", "properties": {
             "descripcion": {"type": "string", "description": "Nombre corto de la tarea"},
-            "accion": {"type": "string", "description": "Codigo Python autocontenido que se ejecutara directamente con correr_python"},
+            "accion": {"type": "string", "description": "Codigo Python autocontenido que se ejecutara directamente"},
             "cuando_epoch": {"type": "integer", "description": "Epoch UTC de la primera ejecucion"},
             "repetir_segundos": {"type": "integer", "description": "0 si es unica; segundos entre repeticiones si es recurrente"}},
             "required": ["descripcion", "accion", "cuando_epoch", "repetir_segundos"]}}}
 ]
 
 HISTORIAL = {}
-STATE = {"last_btc": None, "last_commits": {}, "last_report": None, "turnos": 0}
+STATE = {"last_btc": None, "last_commits": {}, "last_report": None, "turnos": 0,
+         "last_digestivo": "", "last_radar": ""}
 MODELOS_CACHE = {}
 PROPUESTAS = {}
 
 PERFILES = {
     "reviewer": {
-        "system": "Sos un revisor de codigo senior extremadamente estricto y preciso. Tu trabajo es cazar bugs, riesgos de seguridad, errores de logica y problemas de rendimiento. No elogies por elogiar: si algo esta bien, decilo en una linea; concentra tu energia en lo que puede romperse. Se tecnico, directo y concreto.",
+        "system": "Sos un revisor de codigo senior extremadamente estricto y preciso. Tu trabajo es cazar bugs, riesgos de seguridad, errores de logica y problemas de rendimiento. Se tecnico, directo y concreto.",
         "temperature": 0.2
     },
     "investigador": {
-        "system": "Sos un investigador creativo y curioso. Generas alternativas, ideas no obvias y enfoques novedosos. Exploras angulos que otros no ven, comparas opciones con honestidad intelectual y marcas claramente cuales son especulaciones.",
-        "temperature": 0.8
+        "system": "Sos un investigador creativo y experto en IA, agentes, monetizacion y ciberseguridad. Cuando recibas datos crudos de busquedas, sintetizalos en: novedades reales (no inventes), sugerencias concretas y accionables para mejorar un agente, y oportunidades de dinero con URLs y deadlines reales. Se directo, no vendas humo, marca claramente lo que es especulacion.",
+        "temperature": 0.7
     },
     "resumidor": {
-        "system": "Sos un sintetizador profesional. Comprimis cualquier contenido en bullets cortos y densos, sin perder decisiones, pendientes ni datos clave. Nunca agregas informacion que no estaba en el original.",
+        "system": "Sos un sintetizador profesional. Comprimis cualquier contenido en bullets cortos y densos, sin perder decisiones, pendientes ni datos clave.",
         "temperature": 0.3
     },
     "generico": {
@@ -225,9 +214,14 @@ def comando_rapido(texto):
             lineas.append("🧠 Cerebros: groq + cerebras + openrouter + gemini")
             lineas.append("🐕 Centinelas: uptime + render + actions")
             return "\n".join(lineas)
+        if t == "/oportunidades":
+            return STATE.get("last_radar") or "⏳ Todavía no corrió ningún radar. Esperá a las 09:00 o 19:00, o pedile al agente que corra uno ahora."
+        if t == "/digestivo":
+            return STATE.get("last_digestivo") or "⏳ Todavía no corrió ningún digestivo. Esperá a las 08:00 o pedile al agente que corra uno ahora."
         if t in ["/ayuda", "/comandos"]:
             return ("⚡ Comandos rápidos (instantáneos, sin cerebro):\n"
-                    "/btc · /dolar · /clima [ciudad] · /memoria · /estado · /ayuda\n\n"
+                    "/btc · /dolar · /clima [ciudad] · /memoria · /estado\n"
+                    "/oportunidades · /digestivo · /ayuda\n\n"
                     "🎛️ Control:\n"
                     "modo supervisado · segui de corrido · frena\n"
                     "apruebo [ID] · rechazo [ID] · listá actualizaciones")
@@ -396,7 +390,7 @@ def reporte_actualizacion(p, propuesta_id, modo):
 {p.get('reemplazar', '')[:300]}
 
 🕐 Modo de aprobación: {modo}
-️ Anotado en historial_mejoras.json (pedí 'listá actualizaciones' cuando quieras)
+🗂️ Anotado en historial_mejoras.json
 🚀 Commit hecho, deploy en curso (~1-2 min)"""
 
 
@@ -880,17 +874,17 @@ def procesar(texto, chat):
     t = texto.lower().strip()
     if t.startswith("modo autonomo") or t.startswith("modo autónomo") or t.startswith("segui de corrido") or t.startswith("seguí de corrido"):
         if set_modo(True):
-            enviar_telegram("🟢 MODO AUTÓNOMO ACTIVADO: las propuestas se auto-aplican al instante sin esperarte. Decí 'frená' o 'modo supervisado' para recuperar el control total.", chat)
+            enviar_telegram("🟢 MODO AUTÓNOMO ACTIVADO: las propuestas se auto-aplican al instante.", chat)
         else:
-            enviar_telegram("⚠️ No pude guardar el modo en memoria; queda autónomo solo en esta sesión.", chat)
+            enviar_telegram("⚠️ No pude guardar el modo en memoria.", chat)
         return
     if t.startswith("modo supervisado") or t.startswith("frena") or t.startswith("frená") or t.startswith("detene") or t.startswith("detené"):
         if set_modo(False):
-            enviar_telegram("🔴 MODO SUPERVISADO ACTIVADO: toda auto-modificación espera TU aprobación sin límite de tiempo. Nada se aplica sin tu 'apruebo'.", chat)
+            enviar_telegram("🔴 MODO SUPERVISADO ACTIVADO: toda auto-modificación espera TU aprobación.", chat)
         else:
-            enviar_telegram("⚠️ No pude guardar el modo en memoria; queda supervisado solo en esta sesión.", chat)
+            enviar_telegram("⚠️ No pude guardar el modo en memoria.", chat)
         return
-    if t.startswith("lista actualizaciones") or t.startswith("listá actualizaciones") or t.startswith("actualizaciones") or t.startswith("que se actualizo") or t.startswith("qué se actualizó"):
+    if t.startswith("lista actualizaciones") or t.startswith("listá actualizaciones") or t.startswith("actualizaciones"):
         hist, _ = leer_historial_mejoras()
         if not hist:
             enviar_telegram("📋 No hay actualizaciones registradas todavía.", chat)
@@ -937,7 +931,6 @@ def revisar_commit(repo, sha, mensaje):
             diff_resumen.append(
                 f"📄 {archivo['filename']} ({archivo['status']}, +{archivo.get('additions',0)}/-{archivo.get('deletions',0)})\n{patch}")
         if not diff_resumen:
-            print(f"[revisor] commit {sha[:8]} sin archivos con diff")
             return
         diff_texto = "\n\n".join(diff_resumen)[:3500]
         tarea = f"""Analiza este commit de Maxi y dame feedback conciso:
@@ -957,10 +950,8 @@ Sé directo y técnico. Máximo 200 palabras."""
         analisis = llamar_obrero(tarea, "reviewer")
         if "fallo" in analisis[:30]:
             nombres = ", ".join(a["filename"] for a in archivos[:5])
-            analisis = f"📝 Commit: {mensaje}\n📄 Archivos: {nombres}\n(El obrero no estaba disponible; revisión profunda pendiente)"
-        print(f"[revisor] enviando revision de {repo} {sha[:8]}")
+            analisis = f"📝 Commit: {mensaje}\n📄 Archivos: {nombres}"
         enviar_telegram(f"🔍 Revisión de commit en {repo.split('/')[-1]}:\n\n{analisis}")
-        print(f"[revisor] revision enviada ok")
     except Exception as e:
         print(f"[revisor] error: {type(e).__name__}: {e}")
 
